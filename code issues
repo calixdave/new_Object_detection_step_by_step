@@ -1,6 +1,44 @@
 ucanlab@raspberrypi:~/Downloads $ python3 detect_colors.py
-Traceback (most recent call last):
-  File "/home/ucanlab/Downloads/detect_colors.py", line 210, in <module>
-    print(f"slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name} - Untitled-3:210")
-                  ^
-NameError: name 'i' is not defined. Did you mean: 'id'?
+Joblib file contains a dict. Keys found: ['model', 'classes']
+Using classifier from dict key: 'model'
+
+Heading: front
+  slot 0: label=0, conf=0.3598, char=?, saved=debug_tiles/front_slot0.jpg
+    probs: {'0': 0.3598, '1': 0.1105, '2': 0.1282, '3': 0.0795, '4': 0.2505, '5': 0.0715}
+  slot 1: label=0, conf=0.9557, char=?, saved=debug_tiles/front_slot1.jpg
+    probs: {'0': 0.9557, '1': 0.0058, '2': 0.0017, '3': 0.0341, '4': 0.0011, '5': 0.0015}
+  slot 2: label=3, conf=0.9274, char=?, saved=debug_tiles/front_slot2.jpg
+    probs: {'0': 0.0288, '1': 0.0163, '2': 0.0126, '3': 0.9274, '4': 0.008, '5': 0.0068}
+
+Heading: right
+  slot 0: label=1, conf=0.9677, char=?, saved=debug_tiles/right_slot0.jpg
+    probs: {'0': 0.0116, '1': 0.9677, '2': 0.0029, '3': 0.0011, '4': 0.0017, '5': 0.0151}
+  slot 1: label=0, conf=0.6697, char=?, saved=debug_tiles/right_slot1.jpg
+    probs: {'0': 0.6697, '1': 0.0372, '2': 0.0458, '3': 0.0534, '4': 0.1683, '5': 0.0256}
+  slot 2: label=4, conf=0.7279, char=?, saved=debug_tiles/right_slot2.jpg
+    probs: {'0': 0.1008, '1': 0.013, '2': 0.1431, '3': 0.008, '4': 0.7279, '5': 0.0072}
+
+Heading: back
+  slot 0: label=1, conf=0.9659, char=?, saved=debug_tiles/back_slot0.jpg
+    probs: {'0': 0.0117, '1': 0.9659, '2': 0.0036, '3': 0.0012, '4': 0.0024, '5': 0.0152}
+  slot 1: label=3, conf=0.9771, char=?, saved=debug_tiles/back_slot1.jpg
+    probs: {'0': 0.0119, '1': 0.0044, '2': 0.0025, '3': 0.9771, '4': 0.0022, '5': 0.002}
+  slot 2: label=1, conf=0.9603, char=?, saved=debug_tiles/back_slot2.jpg
+    probs: {'0': 0.0082, '1': 0.9603, '2': 0.0031, '3': 0.0011, '4': 0.0018, '5': 0.0255}
+
+Heading: left
+  slot 0: label=3, conf=0.9546, char=?, saved=debug_tiles/left_slot0.jpg
+    probs: {'0': 0.0339, '1': 0.0051, '2': 0.0016, '3': 0.9546, '4': 0.0023, '5': 0.0024}
+  slot 1: label=4, conf=0.4216, char=?, saved=debug_tiles/left_slot1.jpg
+    probs: {'0': 0.2113, '1': 0.0523, '2': 0.1732, '3': 0.1282, '4': 0.4216, '5': 0.0133}
+  slot 2: label=1, conf=0.9465, char=?, saved=debug_tiles/left_slot2.jpg
+    probs: {'0': 0.0258, '1': 0.9465, '2': 0.0069, '3': 0.0039, '4': 0.0051, '5': 0.0118}
+
+Final 3x3 color matrix:
+? ? ?
+? A ?
+? ? ?
+
+Saved: color_results.json
+Saved debug crops in: debug_tiles
+Done.
