@@ -1,20 +1,14 @@
 ucanlab@raspberrypi:~/Downloads $ python3 detect_colors.py
-Traceback (most recent call last):
-  File "/home/ucanlab/Downloads/detect_colors.py", line 92, in classify_tile
-    probs = model.predict_proba(x)[0]
-            ^^^^^^^^^^^^^^^^^^^
-AttributeError: 'dict' object has no attribute 'predict_proba'
+Joblib file contains a dict. Keys found: ['model', 'classes']
+Using classifier from dict key: 'model'
 
-During handling of the above exception, another exception occurred:
-
+Final 3x3 color matrix:
 Traceback (most recent call last):
-  File "/home/ucanlab/Downloads/detect_colors.py", line 228, in <module>
+  File "/home/ucanlab/Downloads/detect_colors.py", line 240, in <module>
     main()
-  File "/home/ucanlab/Downloads/detect_colors.py", line 191, in main
-    label, conf, ch = classify_tile(model, tile)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/ucanlab/Downloads/detect_colors.py", line 99, in classify_tile
-    label = str(model.predict(x)[0]).lower()
-                ^^^^^^^^^^^^^
-AttributeError: 'dict' object has no attribute 'predict'
-ucanlab@raspberrypi:~/Downloads $ 
+  File "/home/ucanlab/Downloads/detect_colors.py", line 220, in main
+    pretty_print_matrix(final_grid)
+  File "/home/ucanlab/Downloads/detect_colors.py", line 157, in pretty_print_matrix
+    vals.append(mat[(col, row)])
+                ~~~^^^^^^^^^^^^
+KeyError: (-1, 2)
