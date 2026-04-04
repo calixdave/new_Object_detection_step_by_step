@@ -9,15 +9,12 @@ SCAN_DIR = "scan_images"
 DEBUG_DIR = "debug_tiles"
 HEADINGS = ["front", "right", "back", "left"]
 
-# Lower band of image where nearest 3 tiles appear
 ROI_TOP_FRAC = 0.55
 ROI_BOT_FRAC = 0.95
 
-# Inner crop padding inside each of the 3 slots
 SLOT_PAD_X_FRAC = 0.03
 SLOT_PAD_Y_FRAC = 0.06
 
-# Keep 0.00 for debugging so nothing gets rejected yet
 CONF_THRESH = 0.00
 
 LABEL_TO_CHAR = {
@@ -37,28 +34,30 @@ HEADING_TO_POSITIONS = {
 }
 
 
-def load_classifier(model_path):
+def load_model_bundle(model_path):
     obj = joblib.load(model_path)
-
-    if hasattr(obj, "predict") or hasattr(obj, "predict_proba"):
-        print("Loaded model directly from joblib file.")
-        return obj
 
     if isinstance(obj, dict):
         print("Joblib file contains a dict. Keys found:", list(obj.keys()))
 
-        candidate_keys = ["model", "clf", "classifier", "svc", "svm", "estimator"]
-        for key in candidate_keys:
-            if key in obj:
-                candidate = obj[key]
-                if hasattr(candidate, "predict") or hasattr(candidate, "predict_proba"):
-                    print(f"Using classifier from dict key: '{key}'")
-                    return candidate
+        if "model" not in obj:
+            raise ValueError("Joblib dict does not contain key 'model'.")
 
-        for key, val in obj.items():
-            if hasattr(val, "predict") or hasattr(val, "predict_proba"):
-                print(f"Using classifier found in dict value under key: '{key}'")
-                return val
+        model = obj["model"]
+        class_names = obj.get("classes", None)
+
+        if class_names is not None:
+            class_names = [str(x).lower() for x in class_names]
+            print("Loaded class names from joblib:", class_names)
+        else:
+            print("No explicit class names found in joblib.")
+
+        return model, class_names
+
+    # fallback if file is directly a model
+    if hasattr(obj, "predict") or hasattr(obj, "predict_proba"):
+        print("Loaded model directly from joblib file.")
+        return obj, None
 
     raise ValueError("No usable classifier found in joblib file.")
 
@@ -89,7 +88,33 @@ def extract_features(img):
     return np.array(feats, dtype=np.float32)
 
 
-def classify_tile(model, tile_bgr):
+def normalize_predicted_label(raw_label, class_names):
+    """
+    Convert model output to a usable color string.
+    Handles:
+      - direct string labels like 'blue'
+      - numeric labels like 0,1,2 using class_names list
+    """
+    s = str(raw_label).lower()
+
+    # already a direct color name
+    if s in LABEL_TO_CHAR:
+        return s
+
+    # numeric index -> class_names
+    if class_names is not None:
+        try:
+            idx = int(raw_label)
+            if 0 <= idx < len(class_names):
+                mapped = str(class_names[idx]).lower()
+                return mapped
+        except Exception:
+            pass
+
+    return s
+
+
+def classify_tile(model, class_names, tile_bgr):
     feats = extract_features(tile_bgr)
     if feats is None:
         return "unknown", 0.0, "?", {}
@@ -99,15 +124,23 @@ def classify_tile(model, tile_bgr):
 
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(x)[0]
-        classes = model.classes_
+
+        if hasattr(model, "classes_"):
+            raw_classes = list(model.classes_)
+        else:
+            raw_classes = list(range(len(probs)))
+
         best_idx = int(np.argmax(probs))
-        label = str(classes[best_idx]).lower()
+        raw_label = raw_classes[best_idx]
+        label = normalize_predicted_label(raw_label, class_names)
         conf = float(probs[best_idx])
 
-        for c, p in zip(classes, probs):
-            prob_map[str(c).lower()] = float(p)
+        for c, p in zip(raw_classes, probs):
+            cname = normalize_predicted_label(c, class_names)
+            prob_map[str(cname)] = float(p)
     else:
-        label = str(model.predict(x)[0]).lower()
+        raw_label = model.predict(x)[0]
+        label = normalize_predicted_label(raw_label, class_names)
         conf = 1.0
 
     ch = LABEL_TO_CHAR[label] if label in LABEL_TO_CHAR else "?"
@@ -166,9 +199,9 @@ def main():
         return
 
     try:
-        model = load_classifier(MODEL_PATH)
+        model, class_names = load_model_bundle(MODEL_PATH)
     except Exception as e:
-        print("ERROR loading classifier:", e)
+        print("ERROR loading model:", e)
         return
 
     final_grid = {
@@ -209,7 +242,7 @@ def main():
             dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
             cv2.imwrite(dbg_name, tile)
 
-            label, conf, ch, prob_map = classify_tile(model, tile)
+            label, conf, ch, prob_map = classify_tile(model, class_names, tile)
             pos = HEADING_TO_POSITIONS[heading][i]
             final_grid[pos] = ch
 
