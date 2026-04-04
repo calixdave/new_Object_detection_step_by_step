@@ -1,109 +1,239 @@
-import cv2
 import os
-import time
+import json
+import cv2
+import joblib
+import numpy as np
 
 # =========================================================
-# Simple Pi-friendly scan capture
-# Saves 4 images only: front, right, back, left
-# Keys:
-#   c = capture current heading
-#   q = quit
+# detect_colors.py
+# Pi-friendly color detection from saved scan images
 # =========================================================
 
-SAVE_DIR = "scan_images"
-CAMERA_INDEX = 0
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-
+MODEL_PATH = "tile_color_model.joblib"
+SCAN_DIR = "scan_images"
 HEADINGS = ["front", "right", "back", "left"]
 
+ROI_TOP_FRAC = 0.62
+ROI_BOT_FRAC = 0.93
 
-def put_text(img, text, y, scale=0.7, thickness=2):
-    cv2.putText(
-        img,
-        text,
-        (20, y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        scale,
-        (0, 255, 0),
-        thickness,
-        cv2.LINE_AA
+SLOT_PAD_X_FRAC = 0.06
+SLOT_PAD_Y_FRAC = 0.10
+
+CONF_THRESH = 0.40
+
+LABEL_TO_CHAR = {
+    "blue": "B",
+    "green": "G",
+    "red": "R",
+    "yellow": "Y",
+    "pink": "M",
+    "purple": "P"
+}
+
+HEADING_TO_POSITIONS = {
+    "front": [(-1, +1), (0, +1), (+1, +1)],
+    "right": [(+1, +1), (+1, 0), (+1, -1)],
+    "back":  [(+1, -1), (0, -1), (-1, -1)],
+    "left":  [(-1, -1), (-1, 0), (-1, +1)],
+}
+
+
+def load_classifier(model_path):
+    obj = joblib.load(model_path)
+
+    # If the joblib file already is the model, use it directly
+    if hasattr(obj, "predict") or hasattr(obj, "predict_proba"):
+        print("Loaded model directly from joblib file.")
+        return obj
+
+    # If wrapped inside a dict, try common keys
+    if isinstance(obj, dict):
+        print("Joblib file contains a dict. Keys found:", list(obj.keys()))
+
+        candidate_keys = [
+            "model", "clf", "classifier", "svc", "svm", "estimator"
+        ]
+
+        for key in candidate_keys:
+            if key in obj:
+                candidate = obj[key]
+                if hasattr(candidate, "predict") or hasattr(candidate, "predict_proba"):
+                    print(f"Using classifier from dict key: '{key}'")
+                    return candidate
+
+        # As a fallback, scan dict values
+        for key, val in obj.items():
+            if hasattr(val, "predict") or hasattr(val, "predict_proba"):
+                print(f"Using classifier found in dict value under key: '{key}'")
+                return val
+
+    raise ValueError(
+        "Could not find a classifier inside tile_color_model.joblib. "
+        "The file loaded, but no usable model object was found."
     )
 
 
+def extract_features(img):
+    h, w = img.shape[:2]
+    y0, y1 = int(0.25 * h), int(0.75 * h)
+    x0, x1 = int(0.25 * w), int(0.75 * w)
+
+    roi = img[y0:y1, x0:x1]
+    if roi.size == 0:
+        return None
+
+    roi = cv2.resize(roi, (64, 64), interpolation=cv2.INTER_AREA)
+
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    feats = []
+    for arr in (lab, hsv):
+        flat = arr.reshape(-1, 3).astype(np.float32)
+        feats.extend(flat.mean(axis=0).tolist())
+        feats.extend(flat.std(axis=0).tolist())
+
+    return np.array(feats, dtype=np.float32)
+
+
+def classify_tile(model, tile_bgr):
+    feats = extract_features(tile_bgr)
+    if feats is None:
+        return "unknown", 0.0, "?"
+
+    x = feats.reshape(1, -1)
+
+    # Try predict_proba first
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(x)[0]
+        classes = model.classes_
+        best_idx = int(np.argmax(probs))
+        label = str(classes[best_idx]).lower()
+        conf = float(probs[best_idx])
+    else:
+        label = str(model.predict(x)[0]).lower()
+        conf = 1.0
+
+    if conf < CONF_THRESH or label not in LABEL_TO_CHAR:
+        return "unknown", conf, "?"
+
+    return label, conf, LABEL_TO_CHAR[label]
+
+
+def get_three_slot_rois(img):
+    h, w = img.shape[:2]
+
+    y0 = int(ROI_TOP_FRAC * h)
+    y1 = int(ROI_BOT_FRAC * h)
+    if y1 <= y0:
+        return []
+
+    band = img[y0:y1, :]
+    bh, bw = band.shape[:2]
+
+    slots = []
+    for i in range(3):
+        sx0 = int(i * bw / 3)
+        sx1 = int((i + 1) * bw / 3)
+
+        pad_x = int(SLOT_PAD_X_FRAC * (sx1 - sx0))
+        pad_y = int(SLOT_PAD_Y_FRAC * bh)
+
+        cx0 = max(0, sx0 + pad_x)
+        cx1 = min(bw, sx1 - pad_x)
+        cy0 = max(0, pad_y)
+        cy1 = min(bh, bh - pad_y)
+
+        crop = band[cy0:cy1, cx0:cx1]
+        slots.append(crop)
+
+    return slots
+
+
+def pretty_print_matrix(mat):
+    for row in range(2, -1, -1):
+        vals = []
+        for col in range(-1, 2):
+            vals.append(mat[(col, row)])
+        print(" ".join(vals))
+
+
 def main():
-    os.makedirs(SAVE_DIR, exist_ok=True)
-
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-
-    # Set modest resolution for Pi stability
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-
-    if not cap.isOpened():
-        print("ERROR: Could not open camera.")
+    if not os.path.exists(MODEL_PATH):
+        print(f"ERROR: Model file not found: {MODEL_PATH}")
         return
 
-    print("Camera opened.")
-    print("Instructions:")
-    print("  Press 'c' to capture current heading")
-    print("  Press 'q' to quit")
-    print("Capture order: front -> right -> back -> left")
+    try:
+        model = load_classifier(MODEL_PATH)
+    except Exception as e:
+        print("ERROR loading classifier:", e)
+        return
 
-    idx = 0
-    last_capture_msg = ""
+    final_grid = {
+        (-1, +1): "?",
+        ( 0, +1): "?",
+        (+1, +1): "?",
+        (-1,  0): "?",
+        ( 0,  0): "A",
+        (+1,  0): "?",
+        (-1, -1): "?",
+        ( 0, -1): "?",
+        (+1, -1): "?",
+    }
 
-    while True:
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            print("ERROR: Failed to read frame from camera.")
-            break
+    detailed = {}
 
-        display = frame.copy()
+    for heading in HEADINGS:
+        path = os.path.join(SCAN_DIR, f"{heading}.jpg")
+        if not os.path.exists(path):
+            print(f"ERROR: Missing image: {path}")
+            return
 
-        if idx < len(HEADINGS):
-            current_heading = HEADINGS[idx]
-            put_text(display, f"Current heading: {current_heading}", 30, 0.9, 2)
-            put_text(display, "Press 'c' to capture this view", 65)
-            put_text(display, "Rotate camera/robot manually before each capture", 95)
-            put_text(display, "Press 'q' to quit", 125)
-        else:
-            put_text(display, "All 4 captures completed.", 30, 0.9, 2)
-            put_text(display, "Press 'q' to quit", 65)
+        img = cv2.imread(path)
+        if img is None:
+            print(f"ERROR: Could not read image: {path}")
+            return
 
-        if last_capture_msg:
-            put_text(display, last_capture_msg, FRAME_HEIGHT - 20, 0.65, 2)
+        slots = get_three_slot_rois(img)
+        if len(slots) != 3:
+            print(f"ERROR: Could not build 3 slots for heading: {heading}")
+            return
 
-        cv2.imshow("capture_scan", display)
+        heading_info = []
 
-        key = cv2.waitKey(1) & 0xFF
+        for i, tile in enumerate(slots):
+            label, conf, ch = classify_tile(model, tile)
+            pos = HEADING_TO_POSITIONS[heading][i]
+            final_grid[pos] = ch
 
-        if key == ord('q'):
-            print("Quit requested.")
-            break
+            heading_info.append({
+                "slot_index": i,
+                "pos": [pos[0], pos[1]],
+                "label": label,
+                "confidence": round(conf, 4),
+                "char": ch
+            })
 
-        elif key == ord('c'):
-            if idx >= len(HEADINGS):
-                print("All headings already captured.")
-                last_capture_msg = "All headings already captured"
-                continue
+        detailed[heading] = heading_info
 
-            heading = HEADINGS[idx]
-            filename = os.path.join(SAVE_DIR, f"{heading}.jpg")
+    print("\nFinal 3x3 color matrix:")
+    pretty_print_matrix(final_grid)
 
-            ok = cv2.imwrite(filename, frame)
-            if ok:
-                print(f"Saved: {filename}")
-                last_capture_msg = f"Saved {heading}.jpg"
-                idx += 1
-                time.sleep(0.4)  # small pause to avoid double-capture
-            else:
-                print(f"ERROR: Failed to save {filename}")
-                last_capture_msg = f"Failed to save {heading}.jpg"
+    out = {
+        "center": [0, 0],
+        "agent": "A",
+        "grid_letters": {
+            f"{c},{r}": final_grid[(c, r)]
+            for (c, r) in final_grid
+        },
+        "per_heading": detailed
+    }
 
-    cap.release()
-    cv2.destroyAllWindows()
-    print("Program ended.")
+    with open("color_results.json", "w") as f:
+        json.dump(out, f, indent=2)
+
+    print("\nSaved: color_results.json")
+    print("Done.")
 
 
 if __name__ == "__main__":
