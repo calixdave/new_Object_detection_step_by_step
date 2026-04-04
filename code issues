@@ -1,43 +1,43 @@
-ucanlab@raspberrypi:~/Downloads $ python3 detect_colors.py
+canlab@raspberrypi:~/Downloads $ python3 detect_colors.py
 Joblib file contains a dict. Keys found: ['model', 'classes']
-Using classifier from dict key: 'model'
+Loaded class names from joblib: ['blue', 'green', 'pink', 'purple', 'red', 'yellow']
 
 Heading: front
-  slot 0: label=0, conf=0.3598, char=?, saved=debug_tiles/front_slot0.jpg
-    probs: {'0': 0.3598, '1': 0.1105, '2': 0.1282, '3': 0.0795, '4': 0.2505, '5': 0.0715}
-  slot 1: label=0, conf=0.9557, char=?, saved=debug_tiles/front_slot1.jpg
-    probs: {'0': 0.9557, '1': 0.0058, '2': 0.0017, '3': 0.0341, '4': 0.0011, '5': 0.0015}
-  slot 2: label=3, conf=0.9274, char=?, saved=debug_tiles/front_slot2.jpg
-    probs: {'0': 0.0288, '1': 0.0163, '2': 0.0126, '3': 0.9274, '4': 0.008, '5': 0.0068}
+  slot 0: label=blue, conf=0.3598, char=B, saved=debug_tiles/front_slot0.jpg
+    probs: {'blue': 0.3598, 'green': 0.1105, 'pink': 0.1282, 'purple': 0.0795, 'red': 0.2505, 'yellow': 0.0715}
+  slot 1: label=blue, conf=0.9557, char=B, saved=debug_tiles/front_slot1.jpg
+    probs: {'blue': 0.9557, 'green': 0.0058, 'pink': 0.0017, 'purple': 0.0341, 'red': 0.0011, 'yellow': 0.0015}
+  slot 2: label=purple, conf=0.9274, char=P, saved=debug_tiles/front_slot2.jpg
+    probs: {'blue': 0.0288, 'green': 0.0163, 'pink': 0.0126, 'purple': 0.9274, 'red': 0.008, 'yellow': 0.0068}
 
 Heading: right
-  slot 0: label=1, conf=0.9677, char=?, saved=debug_tiles/right_slot0.jpg
-    probs: {'0': 0.0116, '1': 0.9677, '2': 0.0029, '3': 0.0011, '4': 0.0017, '5': 0.0151}
-  slot 1: label=0, conf=0.6697, char=?, saved=debug_tiles/right_slot1.jpg
-    probs: {'0': 0.6697, '1': 0.0372, '2': 0.0458, '3': 0.0534, '4': 0.1683, '5': 0.0256}
-  slot 2: label=4, conf=0.7279, char=?, saved=debug_tiles/right_slot2.jpg
-    probs: {'0': 0.1008, '1': 0.013, '2': 0.1431, '3': 0.008, '4': 0.7279, '5': 0.0072}
+  slot 0: label=green, conf=0.9677, char=G, saved=debug_tiles/right_slot0.jpg
+    probs: {'blue': 0.0116, 'green': 0.9677, 'pink': 0.0029, 'purple': 0.0011, 'red': 0.0017, 'yellow': 0.0151}
+  slot 1: label=blue, conf=0.6697, char=B, saved=debug_tiles/right_slot1.jpg
+    probs: {'blue': 0.6697, 'green': 0.0372, 'pink': 0.0458, 'purple': 0.0534, 'red': 0.1683, 'yellow': 0.0256}
+  slot 2: label=red, conf=0.7279, char=R, saved=debug_tiles/right_slot2.jpg
+    probs: {'blue': 0.1008, 'green': 0.013, 'pink': 0.1431, 'purple': 0.008, 'red': 0.7279, 'yellow': 0.0072}
 
 Heading: back
-  slot 0: label=1, conf=0.9659, char=?, saved=debug_tiles/back_slot0.jpg
-    probs: {'0': 0.0117, '1': 0.9659, '2': 0.0036, '3': 0.0012, '4': 0.0024, '5': 0.0152}
-  slot 1: label=3, conf=0.9771, char=?, saved=debug_tiles/back_slot1.jpg
-    probs: {'0': 0.0119, '1': 0.0044, '2': 0.0025, '3': 0.9771, '4': 0.0022, '5': 0.002}
-  slot 2: label=1, conf=0.9603, char=?, saved=debug_tiles/back_slot2.jpg
-    probs: {'0': 0.0082, '1': 0.9603, '2': 0.0031, '3': 0.0011, '4': 0.0018, '5': 0.0255}
+  slot 0: label=green, conf=0.9659, char=G, saved=debug_tiles/back_slot0.jpg
+    probs: {'blue': 0.0117, 'green': 0.9659, 'pink': 0.0036, 'purple': 0.0012, 'red': 0.0024, 'yellow': 0.0152}
+  slot 1: label=purple, conf=0.9771, char=P, saved=debug_tiles/back_slot1.jpg
+    probs: {'blue': 0.0119, 'green': 0.0044, 'pink': 0.0025, 'purple': 0.9771, 'red': 0.0022, 'yellow': 0.002}
+  slot 2: label=green, conf=0.9603, char=G, saved=debug_tiles/back_slot2.jpg
+    probs: {'blue': 0.0082, 'green': 0.9603, 'pink': 0.0031, 'purple': 0.0011, 'red': 0.0018, 'yellow': 0.0255}
 
 Heading: left
-  slot 0: label=3, conf=0.9546, char=?, saved=debug_tiles/left_slot0.jpg
-    probs: {'0': 0.0339, '1': 0.0051, '2': 0.0016, '3': 0.9546, '4': 0.0023, '5': 0.0024}
-  slot 1: label=4, conf=0.4216, char=?, saved=debug_tiles/left_slot1.jpg
-    probs: {'0': 0.2113, '1': 0.0523, '2': 0.1732, '3': 0.1282, '4': 0.4216, '5': 0.0133}
-  slot 2: label=1, conf=0.9465, char=?, saved=debug_tiles/left_slot2.jpg
-    probs: {'0': 0.0258, '1': 0.9465, '2': 0.0069, '3': 0.0039, '4': 0.0051, '5': 0.0118}
+  slot 0: label=purple, conf=0.9546, char=P, saved=debug_tiles/left_slot0.jpg
+    probs: {'blue': 0.0339, 'green': 0.0051, 'pink': 0.0016, 'purple': 0.9546, 'red': 0.0023, 'yellow': 0.0024}
+  slot 1: label=red, conf=0.4216, char=R, saved=debug_tiles/left_slot1.jpg
+    probs: {'blue': 0.2113, 'green': 0.0523, 'pink': 0.1732, 'purple': 0.1282, 'red': 0.4216, 'yellow': 0.0133}
+  slot 2: label=green, conf=0.9465, char=G, saved=debug_tiles/left_slot2.jpg
+    probs: {'blue': 0.0258, 'green': 0.9465, 'pink': 0.0069, 'purple': 0.0039, 'red': 0.0051, 'yellow': 0.0118}
 
 Final 3x3 color matrix:
-? ? ?
-? A ?
-? ? ?
+G B G
+R A B
+P P G
 
 Saved: color_results.json
 Saved debug crops in: debug_tiles
