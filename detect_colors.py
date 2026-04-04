@@ -9,15 +9,15 @@ SCAN_DIR = "scan_images"
 DEBUG_DIR = "debug_tiles"
 HEADINGS = ["front", "right", "back", "left"]
 
-# Try a wider/lower band first
+# Lower band of image where nearest 3 tiles appear
 ROI_TOP_FRAC = 0.55
 ROI_BOT_FRAC = 0.95
 
-# Smaller padding so we don't cut away too much tile
+# Inner crop padding inside each of the 3 slots
 SLOT_PAD_X_FRAC = 0.03
 SLOT_PAD_Y_FRAC = 0.06
 
-# Lower threshold for debugging
+# Keep 0.00 for debugging so nothing gets rejected yet
 CONF_THRESH = 0.00
 
 LABEL_TO_CHAR = {
@@ -41,23 +41,23 @@ def load_classifier(model_path):
     obj = joblib.load(model_path)
 
     if hasattr(obj, "predict") or hasattr(obj, "predict_proba"):
-        print("Loaded model directly from joblib file. - Untitled-3:44")
+        print("Loaded model directly from joblib file.")
         return obj
 
     if isinstance(obj, dict):
-        print("Joblib file contains a dict. Keys found: - Untitled-3:48", list(obj.keys()))
+        print("Joblib file contains a dict. Keys found:", list(obj.keys()))
 
         candidate_keys = ["model", "clf", "classifier", "svc", "svm", "estimator"]
         for key in candidate_keys:
             if key in obj:
                 candidate = obj[key]
                 if hasattr(candidate, "predict") or hasattr(candidate, "predict_proba"):
-                    print(f"Using classifier from dict key: '{key}' - Untitled-3:55")
+                    print(f"Using classifier from dict key: '{key}'")
                     return candidate
 
         for key, val in obj.items():
             if hasattr(val, "predict") or hasattr(val, "predict_proba"):
-                print(f"Using classifier found in dict value under key: '{key}' - Untitled-3:60")
+                print(f"Using classifier found in dict value under key: '{key}'")
                 return val
 
     raise ValueError("No usable classifier found in joblib file.")
@@ -65,8 +65,11 @@ def load_classifier(model_path):
 
 def extract_features(img):
     h, w = img.shape[:2]
-    y0, y1 = int(0.25 * h), int(0.75 * h)
-    x0, x1 = int(0.25 * w), int(0.75 * w)
+
+    y0 = int(0.25 * h)
+    y1 = int(0.75 * h)
+    x0 = int(0.25 * w)
+    x1 = int(0.75 * w)
 
     roi = img[y0:y1, x0:x1]
     if roi.size == 0:
@@ -92,7 +95,6 @@ def classify_tile(model, tile_bgr):
         return "unknown", 0.0, "?", {}
 
     x = feats.reshape(1, -1)
-
     prob_map = {}
 
     if hasattr(model, "predict_proba"):
@@ -109,6 +111,7 @@ def classify_tile(model, tile_bgr):
         conf = 1.0
 
     ch = LABEL_TO_CHAR[label] if label in LABEL_TO_CHAR else "?"
+
     if conf < CONF_THRESH:
         return "unknown", conf, "?", prob_map
 
@@ -120,6 +123,7 @@ def get_three_slot_rois(img):
 
     y0 = int(ROI_TOP_FRAC * h)
     y1 = int(ROI_BOT_FRAC * h)
+
     if y1 <= y0:
         return []
 
@@ -127,6 +131,7 @@ def get_three_slot_rois(img):
     bh, bw = band.shape[:2]
 
     slots = []
+
     for i in range(3):
         sx0 = int(i * bw / 3)
         sx1 = int((i + 1) * bw / 3)
@@ -149,7 +154,7 @@ def pretty_print_matrix(mat):
     for row in [1, 0, -1]:
         vals = []
         for col in [-1, 0, 1]:
-            vals.append(mat[(col, row)])
+            vals.append(mat.get((col, row), "?"))
         print(" ".join(vals))
 
 
@@ -157,13 +162,13 @@ def main():
     os.makedirs(DEBUG_DIR, exist_ok=True)
 
     if not os.path.exists(MODEL_PATH):
-        print(f"ERROR: Model file not found: {MODEL_PATH} - Untitled-3:160")
+        print(f"ERROR: Model file not found: {MODEL_PATH}")
         return
 
     try:
         model = load_classifier(MODEL_PATH)
     except Exception as e:
-        print("ERROR loading classifier: - Untitled-3:166", e)
+        print("ERROR loading classifier:", e)
         return
 
     final_grid = {
@@ -182,46 +187,50 @@ def main():
 
     for heading in HEADINGS:
         path = os.path.join(SCAN_DIR, f"{heading}.jpg")
+
         if not os.path.exists(path):
-            print(f"ERROR: Missing image: {path} - Untitled-3:186")
+            print(f"ERROR: Missing image: {path}")
             return
 
         img = cv2.imread(path)
         if img is None:
-            print(f"ERROR: Could not read image: {path} - Untitled-3:191")
+            print(f"ERROR: Could not read image: {path}")
             return
 
         slots = get_three_slot_rois(img)
         if len(slots) != 3:
-            print(f"ERROR: Could not build 3 slots for heading: {heading} - Untitled-3:196")
+            print(f"ERROR: Could not build 3 slots for heading: {heading}")
             return
 
         heading_info = []
-        print(f"\nHeading: {heading} - Untitled-3:200")
+        print(f"\nHeading: {heading}")
 
         for i, tile in enumerate(slots):
             dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
             cv2.imwrite(dbg_name, tile)
 
-        label, conf, ch, prob_map = classify_tile(model, tile)
-        pos = HEADING_TO_POSITIONS[heading][i]
-        final_grid[pos] = ch
+            label, conf, ch, prob_map = classify_tile(model, tile)
+            pos = HEADING_TO_POSITIONS[heading][i]
+            final_grid[pos] = ch
 
-print(f"slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name} - Untitled-3:210")
-if prob_map:
-    print("probs: - Untitled-3:212", {k: round(v, 4) for k, v in prob_map.items()})
-    heading_info.append({
+            print(f"  slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name}")
+            if prob_map:
+                rounded_probs = {k: round(v, 4) for k, v in prob_map.items()}
+                print("    probs:", rounded_probs)
+
+            heading_info.append({
                 "slot_index": i,
                 "pos": [pos[0], pos[1]],
                 "label": label,
                 "confidence": round(conf, 4),
                 "char": ch,
-                "debug_crop": dbg_name
+                "debug_crop": dbg_name,
+                "probs": {k: round(v, 4) for k, v in prob_map.items()}
             })
 
-    detailed[heading] = heading_info
+        detailed[heading] = heading_info
 
-    print("\nFinal 3x3 color matrix: - Untitled-3:224")
+    print("\nFinal 3x3 color matrix:")
     pretty_print_matrix(final_grid)
 
     out = {
@@ -237,9 +246,9 @@ if prob_map:
     with open("color_results.json", "w") as f:
         json.dump(out, f, indent=2)
 
-    print("\nSaved: color_results.json - Untitled-3:240")
-    print(f"Saved debug crops in: {DEBUG_DIR} - Untitled-3:241")
-    print("Done. - Untitled-3:242")
+    print("\nSaved: color_results.json")
+    print(f"Saved debug crops in: {DEBUG_DIR}")
+    print("Done.")
 
 
 if __name__ == "__main__":
