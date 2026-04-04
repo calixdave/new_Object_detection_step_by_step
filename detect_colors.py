@@ -89,9 +89,11 @@ def extract_features(img):
 def classify_tile(model, tile_bgr):
     feats = extract_features(tile_bgr)
     if feats is None:
-        return "unknown", 0.0, "?"
+        return "unknown", 0.0, "?", {}
 
     x = feats.reshape(1, -1)
+
+    prob_map = {}
 
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(x)[0]
@@ -99,15 +101,18 @@ def classify_tile(model, tile_bgr):
         best_idx = int(np.argmax(probs))
         label = str(classes[best_idx]).lower()
         conf = float(probs[best_idx])
+
+        for c, p in zip(classes, probs):
+            prob_map[str(c).lower()] = float(p)
     else:
         label = str(model.predict(x)[0]).lower()
         conf = 1.0
 
     ch = LABEL_TO_CHAR[label] if label in LABEL_TO_CHAR else "?"
     if conf < CONF_THRESH:
-        return "unknown", conf, "?"
+        return "unknown", conf, "?", prob_map
 
-    return label, conf, ch
+    return label, conf, ch, prob_map
 
 
 def get_three_slot_rois(img):
@@ -198,12 +203,13 @@ def main():
             dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
             cv2.imwrite(dbg_name, tile)
 
-            label, conf, ch = classify_tile(model, tile)
-            pos = HEADING_TO_POSITIONS[heading][i]
-            final_grid[pos] = ch
+           label, conf, ch, prob_map = classify_tile(model, tile)
+           pos = HEADING_TO_POSITIONS[heading][i]
+           final_grid[pos] = ch
 
-            print(f"  slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name}")
-
+print(f"  slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name}")
+if prob_map:
+    print("    probs:", {k: round(v, 4) for k, v in prob_map.items()})
             heading_info.append({
                 "slot_index": i,
                 "pos": [pos[0], pos[1]],
