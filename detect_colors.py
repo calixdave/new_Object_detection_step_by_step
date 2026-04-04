@@ -151,9 +151,9 @@ def get_three_slot_rois(img):
 
 
 def pretty_print_matrix(mat):
-    for row in range(2, -1, -1):
+    for row in [1, 0, -1]:
         vals = []
-        for col in range(-1, 2):
+        for col in [-1, 0, 1]:
             vals.append(mat[(col, row)])
         print(" ".join(vals))
 
