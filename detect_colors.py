@@ -4,22 +4,21 @@ import cv2
 import joblib
 import numpy as np
 
-# =========================================================
-# detect_colors.py
-# Pi-friendly color detection from saved scan images
-# =========================================================
-
 MODEL_PATH = "tile_color_model.joblib"
 SCAN_DIR = "scan_images"
+DEBUG_DIR = "debug_tiles"
 HEADINGS = ["front", "right", "back", "left"]
 
-ROI_TOP_FRAC = 0.62
-ROI_BOT_FRAC = 0.93
+# Try a wider/lower band first
+ROI_TOP_FRAC = 0.55
+ROI_BOT_FRAC = 0.95
 
-SLOT_PAD_X_FRAC = 0.06
-SLOT_PAD_Y_FRAC = 0.10
+# Smaller padding so we don't cut away too much tile
+SLOT_PAD_X_FRAC = 0.03
+SLOT_PAD_Y_FRAC = 0.06
 
-CONF_THRESH = 0.40
+# Lower threshold for debugging
+CONF_THRESH = 0.00
 
 LABEL_TO_CHAR = {
     "blue": "B",
@@ -41,19 +40,14 @@ HEADING_TO_POSITIONS = {
 def load_classifier(model_path):
     obj = joblib.load(model_path)
 
-    # If the joblib file already is the model, use it directly
     if hasattr(obj, "predict") or hasattr(obj, "predict_proba"):
         print("Loaded model directly from joblib file.")
         return obj
 
-    # If wrapped inside a dict, try common keys
     if isinstance(obj, dict):
         print("Joblib file contains a dict. Keys found:", list(obj.keys()))
 
-        candidate_keys = [
-            "model", "clf", "classifier", "svc", "svm", "estimator"
-        ]
-
+        candidate_keys = ["model", "clf", "classifier", "svc", "svm", "estimator"]
         for key in candidate_keys:
             if key in obj:
                 candidate = obj[key]
@@ -61,16 +55,12 @@ def load_classifier(model_path):
                     print(f"Using classifier from dict key: '{key}'")
                     return candidate
 
-        # As a fallback, scan dict values
         for key, val in obj.items():
             if hasattr(val, "predict") or hasattr(val, "predict_proba"):
                 print(f"Using classifier found in dict value under key: '{key}'")
                 return val
 
-    raise ValueError(
-        "Could not find a classifier inside tile_color_model.joblib. "
-        "The file loaded, but no usable model object was found."
-    )
+    raise ValueError("No usable classifier found in joblib file.")
 
 
 def extract_features(img):
@@ -103,7 +93,6 @@ def classify_tile(model, tile_bgr):
 
     x = feats.reshape(1, -1)
 
-    # Try predict_proba first
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(x)[0]
         classes = model.classes_
@@ -114,10 +103,11 @@ def classify_tile(model, tile_bgr):
         label = str(model.predict(x)[0]).lower()
         conf = 1.0
 
-    if conf < CONF_THRESH or label not in LABEL_TO_CHAR:
+    ch = LABEL_TO_CHAR[label] if label in LABEL_TO_CHAR else "?"
+    if conf < CONF_THRESH:
         return "unknown", conf, "?"
 
-    return label, conf, LABEL_TO_CHAR[label]
+    return label, conf, ch
 
 
 def get_three_slot_rois(img):
@@ -159,6 +149,8 @@ def pretty_print_matrix(mat):
 
 
 def main():
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+
     if not os.path.exists(MODEL_PATH):
         print(f"ERROR: Model file not found: {MODEL_PATH}")
         return
@@ -200,18 +192,25 @@ def main():
             return
 
         heading_info = []
+        print(f"\nHeading: {heading}")
 
         for i, tile in enumerate(slots):
+            dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
+            cv2.imwrite(dbg_name, tile)
+
             label, conf, ch = classify_tile(model, tile)
             pos = HEADING_TO_POSITIONS[heading][i]
             final_grid[pos] = ch
+
+            print(f"  slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name}")
 
             heading_info.append({
                 "slot_index": i,
                 "pos": [pos[0], pos[1]],
                 "label": label,
                 "confidence": round(conf, 4),
-                "char": ch
+                "char": ch,
+                "debug_crop": dbg_name
             })
 
         detailed[heading] = heading_info
@@ -233,6 +232,7 @@ def main():
         json.dump(out, f, indent=2)
 
     print("\nSaved: color_results.json")
+    print(f"Saved debug crops in: {DEBUG_DIR}")
     print("Done.")
 
 
