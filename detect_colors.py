@@ -41,23 +41,23 @@ def load_classifier(model_path):
     obj = joblib.load(model_path)
 
     if hasattr(obj, "predict") or hasattr(obj, "predict_proba"):
-        print("Loaded model directly from joblib file.")
+        print("Loaded model directly from joblib file. - Untitled-3:44")
         return obj
 
     if isinstance(obj, dict):
-        print("Joblib file contains a dict. Keys found:", list(obj.keys()))
+        print("Joblib file contains a dict. Keys found: - Untitled-3:48", list(obj.keys()))
 
         candidate_keys = ["model", "clf", "classifier", "svc", "svm", "estimator"]
         for key in candidate_keys:
             if key in obj:
                 candidate = obj[key]
                 if hasattr(candidate, "predict") or hasattr(candidate, "predict_proba"):
-                    print(f"Using classifier from dict key: '{key}'")
+                    print(f"Using classifier from dict key: '{key}' - Untitled-3:55")
                     return candidate
 
         for key, val in obj.items():
             if hasattr(val, "predict") or hasattr(val, "predict_proba"):
-                print(f"Using classifier found in dict value under key: '{key}'")
+                print(f"Using classifier found in dict value under key: '{key}' - Untitled-3:60")
                 return val
 
     raise ValueError("No usable classifier found in joblib file.")
@@ -157,13 +157,13 @@ def main():
     os.makedirs(DEBUG_DIR, exist_ok=True)
 
     if not os.path.exists(MODEL_PATH):
-        print(f"ERROR: Model file not found: {MODEL_PATH}")
+        print(f"ERROR: Model file not found: {MODEL_PATH} - Untitled-3:160")
         return
 
     try:
         model = load_classifier(MODEL_PATH)
     except Exception as e:
-        print("ERROR loading classifier:", e)
+        print("ERROR loading classifier: - Untitled-3:166", e)
         return
 
     final_grid = {
@@ -183,34 +183,34 @@ def main():
     for heading in HEADINGS:
         path = os.path.join(SCAN_DIR, f"{heading}.jpg")
         if not os.path.exists(path):
-            print(f"ERROR: Missing image: {path}")
+            print(f"ERROR: Missing image: {path} - Untitled-3:186")
             return
 
         img = cv2.imread(path)
         if img is None:
-            print(f"ERROR: Could not read image: {path}")
+            print(f"ERROR: Could not read image: {path} - Untitled-3:191")
             return
 
         slots = get_three_slot_rois(img)
         if len(slots) != 3:
-            print(f"ERROR: Could not build 3 slots for heading: {heading}")
+            print(f"ERROR: Could not build 3 slots for heading: {heading} - Untitled-3:196")
             return
 
         heading_info = []
-        print(f"\nHeading: {heading}")
+        print(f"\nHeading: {heading} - Untitled-3:200")
 
         for i, tile in enumerate(slots):
             dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
             cv2.imwrite(dbg_name, tile)
 
-           label, conf, ch, prob_map = classify_tile(model, tile)
-           pos = HEADING_TO_POSITIONS[heading][i]
-           final_grid[pos] = ch
+        label, conf, ch, prob_map = classify_tile(model, tile)
+        pos = HEADING_TO_POSITIONS[heading][i]
+        final_grid[pos] = ch
 
-print(f"  slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name}")
+print(f"slot {i}: label={label}, conf={conf:.4f}, char={ch}, saved={dbg_name} - Untitled-3:210")
 if prob_map:
-    print("    probs:", {k: round(v, 4) for k, v in prob_map.items()})
-            heading_info.append({
+    print("probs: - Untitled-3:212", {k: round(v, 4) for k, v in prob_map.items()})
+    heading_info.append({
                 "slot_index": i,
                 "pos": [pos[0], pos[1]],
                 "label": label,
@@ -219,9 +219,9 @@ if prob_map:
                 "debug_crop": dbg_name
             })
 
-        detailed[heading] = heading_info
+    detailed[heading] = heading_info
 
-    print("\nFinal 3x3 color matrix:")
+    print("\nFinal 3x3 color matrix: - Untitled-3:224")
     pretty_print_matrix(final_grid)
 
     out = {
@@ -237,9 +237,9 @@ if prob_map:
     with open("color_results.json", "w") as f:
         json.dump(out, f, indent=2)
 
-    print("\nSaved: color_results.json")
-    print(f"Saved debug crops in: {DEBUG_DIR}")
-    print("Done.")
+    print("\nSaved: color_results.json - Untitled-3:240")
+    print(f"Saved debug crops in: {DEBUG_DIR} - Untitled-3:241")
+    print("Done. - Untitled-3:242")
 
 
 if __name__ == "__main__":
