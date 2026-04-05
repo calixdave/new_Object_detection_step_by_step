@@ -1,24 +1,8 @@
-Classification report:
-              precision    recall  f1-score   support
-
-        blue     1.0000    1.0000    1.0000        26
-       green     1.0000    1.0000    1.0000        80
-        pink     1.0000    1.0000    1.0000        13
-      purple     1.0000    1.0000    1.0000        40
-         red     1.0000    1.0000    1.0000        26
-      yellow     1.0000    1.0000    1.0000        26
-
-    accuracy                         1.0000       211
-   macro avg     1.0000    1.0000    1.0000       211
-weighted avg     1.0000    1.0000    1.0000       211
-
-Confusion matrix:
-[[26  0  0  0  0  0]
- [ 0 80  0  0  0  0]
- [ 0  0 13  0  0  0]
- [ 0  0  0 40  0  0]
- [ 0  0  0  0 26  0]
- [ 0  0  0  0  0 26]]
-
-Saved model to:
-/home/ucanlab/Downloads/pi_color_retrain/models/tile_color_model_pi.joblib
+Heading: front
+Traceback (most recent call last):
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/detect_objects.py", line 351, in <module>
+    main()
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/detect_objects.py", line 308, in main
+    dbg = draw_debug(tile, label, score, target_rect, orange_rect)
+          ^^^^^^^^^^
+NameError: name 'draw_debug' is not defined
