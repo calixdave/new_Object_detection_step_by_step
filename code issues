@@ -1,8 +1,12 @@
-Heading: front
+ucanlab@raspberrypi:~/Downloads/pi_color_retrain/models $ python3 map_location.py
 Traceback (most recent call last):
-  File "/home/ucanlab/Downloads/pi_color_retrain/models/detect_objects.py", line 351, in <module>
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/map_location.py", line 246, in <module>
     main()
-  File "/home/ucanlab/Downloads/pi_color_retrain/models/detect_objects.py", line 308, in main
-    dbg = draw_debug(tile, label, score, target_rect, orange_rect)
-          ^^^^^^^^^^
-NameError: name 'draw_debug' is not defined
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/map_location.py", line 200, in main
+    local_3x3 = read_local_3x3(VOTED_COLOR_FILE)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/map_location.py", line 36, in read_local_3x3
+    raise FileNotFoundError(f"Could not find file: {path}")
+FileNotFoundError: Could not find file: voted_results/voted_color_3x3.txt
+ucanlab@raspberrypi:~/Downloads/pi_color_retrain/models $ nano map_location.py
+ucanlab@raspberrypi:~/Downloads/pi_color_retrain/models $ 
