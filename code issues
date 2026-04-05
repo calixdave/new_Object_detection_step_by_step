@@ -1,44 +1,24 @@
-canlab@raspberrypi:~/Downloads $ python3 detect_colors.py
-Joblib file contains a dict. Keys found: ['model', 'classes']
-Loaded class names from joblib: ['blue', 'green', 'pink', 'purple', 'red', 'yellow']
+Classification report:
+              precision    recall  f1-score   support
 
-Heading: front
-  slot 0: label=blue, conf=0.3598, char=B, saved=debug_tiles/front_slot0.jpg
-    probs: {'blue': 0.3598, 'green': 0.1105, 'pink': 0.1282, 'purple': 0.0795, 'red': 0.2505, 'yellow': 0.0715}
-  slot 1: label=blue, conf=0.9557, char=B, saved=debug_tiles/front_slot1.jpg
-    probs: {'blue': 0.9557, 'green': 0.0058, 'pink': 0.0017, 'purple': 0.0341, 'red': 0.0011, 'yellow': 0.0015}
-  slot 2: label=purple, conf=0.9274, char=P, saved=debug_tiles/front_slot2.jpg
-    probs: {'blue': 0.0288, 'green': 0.0163, 'pink': 0.0126, 'purple': 0.9274, 'red': 0.008, 'yellow': 0.0068}
+        blue     1.0000    1.0000    1.0000        26
+       green     1.0000    1.0000    1.0000        80
+        pink     1.0000    1.0000    1.0000        13
+      purple     1.0000    1.0000    1.0000        40
+         red     1.0000    1.0000    1.0000        26
+      yellow     1.0000    1.0000    1.0000        26
 
-Heading: right
-  slot 0: label=green, conf=0.9677, char=G, saved=debug_tiles/right_slot0.jpg
-    probs: {'blue': 0.0116, 'green': 0.9677, 'pink': 0.0029, 'purple': 0.0011, 'red': 0.0017, 'yellow': 0.0151}
-  slot 1: label=blue, conf=0.6697, char=B, saved=debug_tiles/right_slot1.jpg
-    probs: {'blue': 0.6697, 'green': 0.0372, 'pink': 0.0458, 'purple': 0.0534, 'red': 0.1683, 'yellow': 0.0256}
-  slot 2: label=red, conf=0.7279, char=R, saved=debug_tiles/right_slot2.jpg
-    probs: {'blue': 0.1008, 'green': 0.013, 'pink': 0.1431, 'purple': 0.008, 'red': 0.7279, 'yellow': 0.0072}
+    accuracy                         1.0000       211
+   macro avg     1.0000    1.0000    1.0000       211
+weighted avg     1.0000    1.0000    1.0000       211
 
-Heading: back
-  slot 0: label=green, conf=0.9659, char=G, saved=debug_tiles/back_slot0.jpg
-    probs: {'blue': 0.0117, 'green': 0.9659, 'pink': 0.0036, 'purple': 0.0012, 'red': 0.0024, 'yellow': 0.0152}
-  slot 1: label=purple, conf=0.9771, char=P, saved=debug_tiles/back_slot1.jpg
-    probs: {'blue': 0.0119, 'green': 0.0044, 'pink': 0.0025, 'purple': 0.9771, 'red': 0.0022, 'yellow': 0.002}
-  slot 2: label=green, conf=0.9603, char=G, saved=debug_tiles/back_slot2.jpg
-    probs: {'blue': 0.0082, 'green': 0.9603, 'pink': 0.0031, 'purple': 0.0011, 'red': 0.0018, 'yellow': 0.0255}
+Confusion matrix:
+[[26  0  0  0  0  0]
+ [ 0 80  0  0  0  0]
+ [ 0  0 13  0  0  0]
+ [ 0  0  0 40  0  0]
+ [ 0  0  0  0 26  0]
+ [ 0  0  0  0  0 26]]
 
-Heading: left
-  slot 0: label=purple, conf=0.9546, char=P, saved=debug_tiles/left_slot0.jpg
-    probs: {'blue': 0.0339, 'green': 0.0051, 'pink': 0.0016, 'purple': 0.9546, 'red': 0.0023, 'yellow': 0.0024}
-  slot 1: label=red, conf=0.4216, char=R, saved=debug_tiles/left_slot1.jpg
-    probs: {'blue': 0.2113, 'green': 0.0523, 'pink': 0.1732, 'purple': 0.1282, 'red': 0.4216, 'yellow': 0.0133}
-  slot 2: label=green, conf=0.9465, char=G, saved=debug_tiles/left_slot2.jpg
-    probs: {'blue': 0.0258, 'green': 0.9465, 'pink': 0.0069, 'purple': 0.0039, 'red': 0.0051, 'yellow': 0.0118}
-
-Final 3x3 color matrix:
-G B G
-R A B
-P P G
-
-Saved: color_results.json
-Saved debug crops in: debug_tiles
-Done.
+Saved model to:
+/home/ucanlab/Downloads/pi_color_retrain/models/tile_color_model_pi.joblib
