@@ -1,23 +1,11 @@
-Current params:
-roi_top = 0.34
-roi_bot = 0.94
-pad_x = 0.03
-pad_y = 0.06
-white_min = 126
-black_max = 95
-red_s_min = 95
-red_v_min = 120
-white_ratio_th = 0.417
-red_ratio_th = 0.23
-black_ratio_th = 0.18
-empty_white_th = 0.895
-empty_red_th = 0.9
-empty_black_th = 1.0
-canny1 = 0
-canny2 = 0
-hough_th = 38
-min_line = 0
-max_gap = 100
-blur_odd = 1
-slot labels = ['T', 'E', 'O']
-
+MATCHED WINDOW USED FOR COMPACT COLOR: - grid_program_pi_runtime_still_capture_markerfix.py:800
+Traceback (most recent call last):
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/pi_sensing_senior_design.py", line 870, in <module>
+    main()
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/pi_sensing_senior_design.py", line 853, in main
+    compact_17char = map_location(local_color_3x3, local_object_3x3)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ucanlab/Downloads/pi_color_retrain/models/pi_sensing_senior_design.py", line 801, in map_location
+    print(pretty_matrix(best["window - grid_program_pi_runtime_still_capture_markerfix.py:801"]))
+                        ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'window - grid_program_pi_runtime_still_capture_markerfix.py:801'
