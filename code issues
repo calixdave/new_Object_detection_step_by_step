@@ -1,43 +1,23 @@
-def rotate_direction(direction, steps_ccw):
-    dirs = ["UP", "LEFT", "DOWN", "RIGHT"]  # CCW order
-    idx = dirs.index(direction)
-    return dirs[(idx + steps_ccw) % 4]
+Current params:
+roi_top = 0.34
+roi_bot = 0.94
+pad_x = 0.03
+pad_y = 0.06
+white_min = 126
+black_max = 95
+red_s_min = 95
+red_v_min = 120
+white_ratio_th = 0.417
+red_ratio_th = 0.23
+black_ratio_th = 0.18
+empty_white_th = 0.895
+empty_red_th = 0.9
+empty_black_th = 1.0
+canny1 = 0
+canny2 = 0
+hough_th = 38
+min_line = 0
+max_gap = 100
+blur_odd = 1
+slot labels = ['T', 'E', 'O']
 
-
-def get_scan_order(scan_start_local="FRONT", scan_sweep="cw", num_views=4):
-    scan_start_local = scan_start_local.upper()
-    scan_sweep = scan_sweep.lower()
-
-    if scan_sweep == "cw":
-        base_order = ["FRONT", "RIGHT", "BACK", "LEFT"]
-    elif scan_sweep == "ccw":
-        base_order = ["FRONT", "LEFT", "BACK", "RIGHT"]
-    else:
-        raise ValueError(f"scan_sweep must be 'cw' or 'ccw', got: {scan_sweep}")
-
-    if scan_start_local not in base_order:
-        raise ValueError(f"scan_start_local must be one of {base_order}, got: {scan_start_local}")
-
-    start_idx = base_order.index(scan_start_local)
-    ordered = base_order[start_idx:] + base_order[:start_idx]
-    return ordered[:num_views]
-
-
-def local_heading_to_map_direction(start_map_direction, local_heading):
-    local_heading = local_heading.upper()
-
-    local_steps_ccw = {
-        "FRONT": 0,
-        "LEFT": 1,
-        "BACK": 2,
-        "RIGHT": 3,
-    }
-
-    return rotate_direction(start_map_direction, local_steps_ccw[local_heading])
-
-
-def get_final_camera_direction_after_scan(start_map_direction, scan_start_local="FRONT", scan_sweep="cw", num_views=4):
-    order = get_scan_order(scan_start_local, scan_sweep, num_views)
-    final_local_heading = order[-1]
-    final_map_direction = local_heading_to_map_direction(start_map_direction, final_local_heading)
-    return final_local_heading, final_map_direction
