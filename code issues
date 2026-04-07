@@ -13,52 +13,40 @@ RESULTS_DIR = "results"
 
 HEADINGS = ["front", "right", "back", "left"]
 
-# ---------------------------------------------------------
-# ROI / slot config
-# ---------------------------------------------------------
-
 ROI_TOP_FRAC = 0.34
 ROI_BOT_FRAC = 0.94
 
 SLOT_PAD_X_FRAC = 0.03
 SLOT_PAD_Y_FRAC = 0.06
 
-# ---------------------------------------------------------
-# Detection thresholds
-# tuned stricter to reduce false obstacles / '?'
-# ---------------------------------------------------------
+# White box detection
+WHITE_MIN = 145
+MIN_BOX_AREA_FRAC = 0.06
+MAX_BOX_AREA_FRAC = 0.75
+MIN_BOX_FILL = 0.55
+MIN_ASPECT = 0.45
+MAX_ASPECT = 1.85
+CENTER_DIST_FRAC = 0.38
 
-WHITE_MIN = 135
-BLACK_MAX = 85
-RED_S_MIN = 105
-RED_V_MIN = 125
+# Red X thresholds
+RED_S_MIN = 110
+RED_V_MIN = 120
+MIN_RED_RATIO_IN_BOX = 0.035
 
-# stronger object requirements
-WHITE_RATIO_TH = 0.42
-RED_RATIO_TH = 0.10
-BLACK_RATIO_TH = 0.10
+# Black X thresholds
+BLACK_MAX = 75
+MIN_BLACK_RATIO_IN_BOX = 0.035
 
-# stronger "empty" defaults
-EMPTY_WHITE_TH = 0.22
-EMPTY_RED_TH = 0.05
-EMPTY_BLACK_TH = 0.18
-
+# line detection inside detected box
 CANNY1 = 60
 CANNY2 = 160
-HOUGH_TH = 34
-MIN_LINE = 18
-MAX_GAP = 18
+HOUGH_TH = 22
+MIN_LINE_FRAC = 0.18
+MAX_GAP = 14
 
-BLUR_ODD = 3
-
-CENTER_CROP_FRAC = 0.72   # use center only to avoid floor/background edges
-MIN_X_LINES_EACH = 2      # require stronger X evidence
-
-# Object meaning:
-# O = obstacle   (white box with thick red X)
-# T = target     (white box with thick black X)
-# E = empty
-# ? = unknown
+# final confidence
+MIN_DIAG_LINES_EACH = 1
+MIN_LONG_DIAG_EACH = 1
 
 HEADING_TO_POSITIONS = {
     "front": [(-1, +1), (0, +1), (+1, +1)],
@@ -104,15 +92,6 @@ def get_three_slot_rois(img):
     return slots
 
 
-def center_crop(img, frac=0.72):
-    h, w = img.shape[:2]
-    ch = max(1, int(h * frac))
-    cw = max(1, int(w * frac))
-    y0 = max(0, (h - ch) // 2)
-    x0 = max(0, (w - cw) // 2)
-    return img[y0:y0 + ch, x0:x0 + cw]
-
-
 def matrix_rows_from_grid(final_grid):
     rows = []
     for row in [1, 0, -1]:
@@ -137,29 +116,137 @@ def save_matrix_txt(path, final_grid):
 
 
 # =========================================================
-# OBJECT DETECTION
+# BOX / X HELPERS
 # =========================================================
 
-def detect_one_object_slot(slot_bgr):
-    if slot_bgr is None or slot_bgr.size == 0:
-        return "?", {"reason": "empty_slot"}
+def find_best_white_box(slot_bgr):
+    h, w = slot_bgr.shape[:2]
+    slot_area = float(h * w)
 
-    work = center_crop(slot_bgr, CENTER_CROP_FRAC)
-    if work is None or work.size == 0:
-        return "?", {"reason": "bad_center_crop"}
+    gray = cv2.cvtColor(slot_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    white_mask = cv2.inRange(blur, WHITE_MIN, 255)
 
-    if BLUR_ODD > 1:
-        k = BLUR_ODD if BLUR_ODD % 2 == 1 else BLUR_ODD + 1
-        gray_blur = cv2.GaussianBlur(gray, (k, k), 0)
-    else:
-        gray_blur = gray
+    kernel = np.ones((3, 3), np.uint8)
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
 
-    # -------------------------------
-    # red X detection
-    # -------------------------------
+    contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best = None
+    slot_cx = w / 2.0
+    slot_cy = h / 2.0
+    max_center_dist = CENTER_DIST_FRAC * min(w, h)
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area <= 0:
+            continue
+
+        area_frac = area / slot_area
+        if area_frac < MIN_BOX_AREA_FRAC or area_frac > MAX_BOX_AREA_FRAC:
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        if bw <= 0 or bh <= 0:
+            continue
+
+        aspect = bw / float(bh)
+        if aspect < MIN_ASPECT or aspect > MAX_ASPECT:
+            continue
+
+        rect_area = float(bw * bh)
+        fill = area / rect_area
+        if fill < MIN_BOX_FILL:
+            continue
+
+        cx = x + bw / 2.0
+        cy = y + bh / 2.0
+        center_dist = float(np.hypot(cx - slot_cx, cy - slot_cy))
+        if center_dist > max_center_dist:
+            continue
+
+        score = (2.0 * area_frac) + (1.2 * fill) - (0.8 * center_dist / max_center_dist)
+
+        cand = {
+            "x": x,
+            "y": y,
+            "w": bw,
+            "h": bh,
+            "area_frac": area_frac,
+            "fill": fill,
+            "aspect": aspect,
+            "center_dist": center_dist,
+            "score": score,
+            "mask": white_mask
+        }
+
+        if best is None or cand["score"] > best["score"]:
+            best = cand
+
+    return best
+
+
+def line_metrics_in_box(box_bgr):
+    gray = cv2.cvtColor(box_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    h, w = gray.shape[:2]
+    min_line_len = max(8, int(MIN_LINE_FRAC * min(h, w)))
+
+    edges = cv2.Canny(gray, CANNY1, CANNY2)
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=max(1, HOUGH_TH),
+        minLineLength=min_line_len,
+        maxLineGap=MAX_GAP
+    )
+
+    diag_pos = 0
+    diag_neg = 0
+    long_pos = 0
+    long_neg = 0
+
+    strong_len = 0.25 * min(h, w)
+
+    if lines is not None:
+        for ln in lines[:, 0]:
+            x1, y1, x2, y2 = ln
+            dx = x2 - x1
+            dy = y2 - y1
+            if dx == 0:
+                continue
+
+            ang = np.degrees(np.arctan2(dy, dx))
+            length = float(np.hypot(dx, dy))
+
+            if 28 <= ang <= 62:
+                diag_pos += 1
+                if length >= strong_len:
+                    long_pos += 1
+            elif -62 <= ang <= -28:
+                diag_neg += 1
+                if length >= strong_len:
+                    long_neg += 1
+
+    return {
+        "diag_pos": diag_pos,
+        "diag_neg": diag_neg,
+        "long_pos": long_pos,
+        "long_neg": long_neg,
+        "has_x": (diag_pos >= MIN_DIAG_LINES_EACH and diag_neg >= MIN_DIAG_LINES_EACH),
+        "has_strong_x": (long_pos >= MIN_LONG_DIAG_EACH and long_neg >= MIN_LONG_DIAG_EACH),
+        "edges": edges
+    }
+
+
+def red_black_ratios_in_box(box_bgr):
+    hsv = cv2.cvtColor(box_bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(box_bgr, cv2.COLOR_BGR2GRAY)
+
     lower_red1 = np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
     upper_red1 = np.array([10, 255, 255], dtype=np.uint8)
     lower_red2 = np.array([170, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
@@ -169,114 +256,103 @@ def detect_one_object_slot(slot_bgr):
     red2 = cv2.inRange(hsv, lower_red2, upper_red2)
     red_mask = cv2.bitwise_or(red1, red2)
 
-    # small cleanup
+    black_mask = cv2.inRange(gray, 0, BLACK_MAX)
+
     kernel = np.ones((3, 3), np.uint8)
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
 
     red_ratio = float(np.count_nonzero(red_mask)) / red_mask.size
-
-    # -------------------------------
-    # white / black area
-    # -------------------------------
-    white_mask = cv2.inRange(gray, WHITE_MIN, 255)
-    black_mask = cv2.inRange(gray, 0, BLACK_MAX)
-
-    white_ratio = float(np.count_nonzero(white_mask)) / white_mask.size
     black_ratio = float(np.count_nonzero(black_mask)) / black_mask.size
 
-    # -------------------------------
-    # diagonal line detection
-    # -------------------------------
-    edges = cv2.Canny(gray_blur, CANNY1, CANNY2)
-    lines = cv2.HoughLinesP(
-        edges,
-        1,
-        np.pi / 180,
-        threshold=max(1, HOUGH_TH),
-        minLineLength=max(1, MIN_LINE),
-        maxLineGap=max(0, MAX_GAP)
-    )
+    return red_ratio, black_ratio, red_mask, black_mask
 
-    diag_pos = 0
-    diag_neg = 0
-    long_diag_pos = 0
-    long_diag_neg = 0
 
-    h, w = gray.shape[:2]
-    min_good_len = 0.22 * min(h, w)
+# =========================================================
+# OBJECT DETECTION
+# =========================================================
 
-    if lines is not None:
-        for ln in lines[:, 0]:
-            x1, y1, x2, y2 = ln
-            dx = x2 - x1
-            dy = y2 - y1
+def detect_one_object_slot(slot_bgr):
+    if slot_bgr is None or slot_bgr.size == 0:
+        return "?", {"reason": "empty_slot"}
 
-            if dx == 0:
-                continue
+    best_box = find_best_white_box(slot_bgr)
 
-            ang = np.degrees(np.arctan2(dy, dx))
-            length = float(np.hypot(dx, dy))
+    if best_box is None:
+        return "E", {
+            "reason": "no_good_white_box"
+        }
 
-            if 28 <= ang <= 62:
-                diag_pos += 1
-                if length >= min_good_len:
-                    long_diag_pos += 1
-            elif -62 <= ang <= -28:
-                diag_neg += 1
-                if length >= min_good_len:
-                    long_diag_neg += 1
+    x = best_box["x"]
+    y = best_box["y"]
+    w = best_box["w"]
+    h = best_box["h"]
 
-    has_x_shape = (diag_pos >= MIN_X_LINES_EACH and diag_neg >= MIN_X_LINES_EACH)
-    has_strong_x = (long_diag_pos >= 1 and long_diag_neg >= 1)
+    box_bgr = slot_bgr[y:y+h, x:x+w]
+    if box_bgr.size == 0:
+        return "E", {
+            "reason": "bad_box_crop"
+        }
+
+    red_ratio, black_ratio, red_mask, black_mask = red_black_ratios_in_box(box_bgr)
+    lm = line_metrics_in_box(box_bgr)
 
     metrics = {
+        "box_x": int(x),
+        "box_y": int(y),
+        "box_w": int(w),
+        "box_h": int(h),
+        "box_area_frac": round(best_box["area_frac"], 4),
+        "box_fill": round(best_box["fill"], 4),
+        "box_aspect": round(best_box["aspect"], 4),
+        "center_dist": round(best_box["center_dist"], 2),
         "red_ratio": round(red_ratio, 4),
-        "white_ratio": round(white_ratio, 4),
         "black_ratio": round(black_ratio, 4),
-        "diag_pos": int(diag_pos),
-        "diag_neg": int(diag_neg),
-        "long_diag_pos": int(long_diag_pos),
-        "long_diag_neg": int(long_diag_neg),
-        "has_x_shape": bool(has_x_shape),
-        "has_strong_x": bool(has_strong_x),
+        "diag_pos": int(lm["diag_pos"]),
+        "diag_neg": int(lm["diag_neg"]),
+        "long_pos": int(lm["long_pos"]),
+        "long_neg": int(lm["long_neg"]),
+        "has_x": bool(lm["has_x"]),
+        "has_strong_x": bool(lm["has_strong_x"]),
     }
 
-    # -------------------------------------------------
-    # EARLY EMPTY:
-    # if there is not enough white box and not enough symbol color,
-    # call it empty instead of '?'
-    # -------------------------------------------------
-    if (
-        white_ratio < EMPTY_WHITE_TH and
-        red_ratio < EMPTY_RED_TH and
-        black_ratio < EMPTY_BLACK_TH
-    ):
-        return "E", metrics
-
     # obstacle = white box + red X
-    if (
-        white_ratio >= WHITE_RATIO_TH and
-        red_ratio >= RED_RATIO_TH and
-        has_x_shape and
-        has_strong_x
-    ):
+    if red_ratio >= MIN_RED_RATIO_IN_BOX and lm["has_x"] and lm["has_strong_x"]:
         return "O", metrics
 
     # target = white box + black X
-    if (
-        white_ratio >= WHITE_RATIO_TH and
-        black_ratio >= BLACK_RATIO_TH and
-        has_x_shape and
-        has_strong_x
-    ):
+    if black_ratio >= MIN_BLACK_RATIO_IN_BOX and lm["has_x"] and lm["has_strong_x"]:
         return "T", metrics
 
-    # if it looks mostly empty/noisy, bias to empty rather than '?'
-    if white_ratio < 0.30 and red_ratio < 0.08 and black_ratio < 0.22:
-        return "E", metrics
+    # good white box but no strong X -> empty
+    return "E", metrics
 
-    return "?", metrics
+
+# =========================================================
+# DEBUG DRAW
+# =========================================================
+
+def make_debug_view(tile, obj_char, metrics):
+    out = tile.copy()
+
+    if "box_x" in metrics:
+        x = metrics["box_x"]
+        y = metrics["box_y"]
+        w = metrics["box_w"]
+        h = metrics["box_h"]
+        cv2.rectangle(out, (x, y), (x+w, y+h), (0, 255, 255), 2)
+
+    txt1 = f"obj={obj_char}"
+    txt2 = f"red={metrics.get('red_ratio', 0):.3f} black={metrics.get('black_ratio', 0):.3f}"
+    txt3 = f"dp={metrics.get('diag_pos', 0)} dn={metrics.get('diag_neg', 0)}"
+    txt4 = f"lp={metrics.get('long_pos', 0)} ln={metrics.get('long_neg', 0)}"
+
+    cv2.putText(out, txt1, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
+    cv2.putText(out, txt2, (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,255,0), 1, cv2.LINE_AA)
+    cv2.putText(out, txt3, (8, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,255,0), 1, cv2.LINE_AA)
+    cv2.putText(out, txt4, (8, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,255,0), 1, cv2.LINE_AA)
+
+    return out
 
 
 # =========================================================
@@ -322,12 +398,13 @@ def main():
         print(f"\nHeading: {heading}")
 
         for i, tile in enumerate(slots):
-            dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
-            cv2.imwrite(dbg_name, tile)
-
             obj_char, metrics = detect_one_object_slot(tile)
             pos = HEADING_TO_POSITIONS[heading][i]
             final_grid[pos] = obj_char
+
+            dbg_img = make_debug_view(tile, obj_char, metrics)
+            dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
+            cv2.imwrite(dbg_name, dbg_img)
 
             print(f"  slot {i}: object={obj_char}, saved={dbg_name}")
             print(f"    metrics: {metrics}")
