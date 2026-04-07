@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 # =========================================================
-# LIVE OBJECT TUNER - fixed window layout version
+# LIVE OBJECT TUNER - updated starting values
 # =========================================================
 
 CAMERA_INDEX = 0
@@ -26,25 +26,22 @@ def biggest_contour(mask):
         return None
     return max(cnts, key=cv2.contourArea)
 
-# Create windows first
 cv2.namedWindow(WINDOW_MAIN, cv2.WINDOW_NORMAL)
 cv2.namedWindow(WINDOW_WHITE, cv2.WINDOW_NORMAL)
 cv2.namedWindow(WINDOW_RED, cv2.WINDOW_NORMAL)
 cv2.namedWindow(WINDOW_BLACK, cv2.WINDOW_NORMAL)
 
-# Force window sizes
 cv2.resizeWindow(WINDOW_MAIN, 900, 650)
 cv2.resizeWindow(WINDOW_WHITE, 320, 240)
 cv2.resizeWindow(WINDOW_RED, 320, 240)
 cv2.resizeWindow(WINDOW_BLACK, 320, 240)
 
-# Try to place windows on screen
 cv2.moveWindow(WINDOW_MAIN, 20, 20)
 cv2.moveWindow(WINDOW_WHITE, 950, 20)
 cv2.moveWindow(WINDOW_RED, 950, 300)
 cv2.moveWindow(WINDOW_BLACK, 950, 580)
 
-# Trackbars on main window
+# Trackbars
 cv2.createTrackbar("WHITE_S_MAX", WINDOW_MAIN, 75, 255, nothing)
 cv2.createTrackbar("WHITE_V_MIN", WINDOW_MAIN, 140, 255, nothing)
 cv2.createTrackbar("MIN_WHITE_AREA", WINDOW_MAIN, 2500, 30000, nothing)
@@ -56,9 +53,10 @@ cv2.createTrackbar("RED_V_MIN", WINDOW_MAIN, 100, 255, nothing)
 
 cv2.createTrackbar("BLACK_V_MAX", WINDOW_MAIN, 70, 255, nothing)
 
-cv2.createTrackbar("RED_RATIO_x100", WINDOW_MAIN, 8, 100, nothing)
-cv2.createTrackbar("BLACK_RATIO_x100", WINDOW_MAIN, 10, 100, nothing)
-cv2.createTrackbar("MARGIN_x100", WINDOW_MAIN, 120, 300, nothing)
+# updated starting values here
+cv2.createTrackbar("RED_RATIO_x100", WINDOW_MAIN, 20, 100, nothing)
+cv2.createTrackbar("BLACK_RATIO_x100", WINDOW_MAIN, 20, 100, nothing)
+cv2.createTrackbar("MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
 
 cv2.createTrackbar("OPEN_K", WINDOW_MAIN, 3, 15, nothing)
 cv2.createTrackbar("CLOSE_K", WINDOW_MAIN, 5, 15, nothing)
@@ -183,7 +181,6 @@ while True:
 
             cv2.rectangle(display, (x0 + rx, y0 + ry), (x0 + rx + rw, y0 + ry + rh), (0, 255, 0), 2)
 
-    # small ROI preview on live window
     work_small = cv2.resize(work, (180, 180))
     display[10:190, FRAME_WIDTH-190:FRAME_WIDTH-10] = work_small
 
@@ -196,7 +193,6 @@ while True:
     cv2.putText(display, f"black_ratio: {black_ratio:.3f}", (250, FRAME_HEIGHT - 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
 
-    # IMPORTANT: show live image
     cv2.imshow(WINDOW_MAIN, display)
     cv2.imshow(WINDOW_WHITE, white_mask)
     cv2.imshow(WINDOW_RED, red_mask_full)
