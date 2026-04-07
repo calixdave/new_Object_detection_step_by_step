@@ -2,14 +2,17 @@ import cv2
 import numpy as np
 
 # =========================================================
-# LIVE OBJECT TUNER - red vs blue version
+# LIVE OBJECT TUNER - updated
 #
 # O = obstacle = white card with thick red X
 # T = target   = white card with thick black X
 # E = empty
 #
-# This version helps reject PURPLE tiles being mistaken as O
-# by checking BLUE inside the detected white-card ROI.
+# Improvements:
+# - checks all white candidates instead of only biggest contour
+# - uses proper close kernel
+# - scores candidates more robustly
+# - adds white_ratio debugging
 # =========================================================
 
 CAMERA_INDEX = 0
@@ -28,11 +31,9 @@ BOX_HALF_H = 120
 def nothing(x):
     pass
 
-def biggest_contour(mask):
+def get_external_contours(mask):
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return None
-    return max(cnts, key=cv2.contourArea)
+    return cnts
 
 # ----------------------------
 # Windows
@@ -85,6 +86,9 @@ cv2.createTrackbar("BLUE_RATIO_MAX_x100", WINDOW_MAIN, 12, 100, nothing)
 cv2.createTrackbar("RB_MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
 cv2.createTrackbar("TB_MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
 
+# Extra white-card filter
+cv2.createTrackbar("WHITE_RATIO_MIN_x100", WINDOW_MAIN, 18, 100, nothing)
+
 # Morphology
 cv2.createTrackbar("OPEN_K", WINDOW_MAIN, 3, 15, nothing)
 cv2.createTrackbar("CLOSE_K", WINDOW_MAIN, 5, 15, nothing)
@@ -131,6 +135,7 @@ while True:
     BLUE_RATIO_MAX = cv2.getTrackbarPos("BLUE_RATIO_MAX_x100", WINDOW_MAIN) / 100.0
     RB_MARGIN = cv2.getTrackbarPos("RB_MARGIN_x100", WINDOW_MAIN) / 100.0
     TB_MARGIN = cv2.getTrackbarPos("TB_MARGIN_x100", WINDOW_MAIN) / 100.0
+    WHITE_RATIO_MIN = cv2.getTrackbarPos("WHITE_RATIO_MIN_x100", WINDOW_MAIN) / 100.0
 
     OPEN_K = max(1, cv2.getTrackbarPos("OPEN_K", WINDOW_MAIN))
     CLOSE_K = max(1, cv2.getTrackbarPos("CLOSE_K", WINDOW_MAIN))
@@ -169,137 +174,158 @@ while True:
     white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel_open)
     white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel_close)
 
-    cnt = biggest_contour(white_mask)
+    cnts = get_external_contours(white_mask)
 
     label = "E"
     red_ratio = 0.0
     blue_ratio = 0.0
     black_ratio = 0.0
+    white_ratio = 0.0
     found_area = 0.0
 
     red_mask_full = np.zeros_like(white_mask)
     blue_mask_full = np.zeros_like(white_mask)
     black_mask_full = np.zeros_like(white_mask)
 
-    if cnt is not None:
+    best_score = -1.0
+    best_rect = None
+
+    for cnt in cnts:
         area = cv2.contourArea(cnt)
-        found_area = area
+        if area < MIN_WHITE_AREA:
+            continue
 
-        if area >= MIN_WHITE_AREA:
-            rx, ry, rw, rh = cv2.boundingRect(cnt)
+        rx, ry, rw, rh = cv2.boundingRect(cnt)
+        if rw <= 0 or rh <= 0:
+            continue
 
-            cv2.rectangle(work, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
-            cv2.rectangle(display, (x0 + rx, y0 + ry), (x0 + rx + rw, y0 + ry + rh), (0, 255, 0), 2)
+        roi = work[ry:ry+rh, rx:rx+rw].copy()
+        roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-            roi = work[ry:ry+rh, rx:rx+rw].copy()
-            roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        white_roi = white_mask[ry:ry+rh, rx:rx+rw]
 
-            # ----------------------------
-            # Red mask
-            # ----------------------------
-            red1 = cv2.inRange(
+        # ----------------------------
+        # Red mask
+        # ----------------------------
+        red1 = cv2.inRange(
+            roi_hsv,
+            np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8),
+            np.array([RED_H1_MAX, 255, 255], dtype=np.uint8)
+        )
+        red2 = cv2.inRange(
+            roi_hsv,
+            np.array([RED_H2_MIN, RED_S_MIN, RED_V_MIN], dtype=np.uint8),
+            np.array([180, 255, 255], dtype=np.uint8)
+        )
+        red_mask = cv2.bitwise_or(red1, red2)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel_open)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel_close)
+
+        # ----------------------------
+        # Blue mask
+        # ----------------------------
+        if BLUE_H_MIN <= BLUE_H_MAX:
+            blue_mask = cv2.inRange(
                 roi_hsv,
-                np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8),
-                np.array([RED_H1_MAX, 255, 255], dtype=np.uint8)
+                np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
+                np.array([BLUE_H_MAX, 255, 255], dtype=np.uint8)
             )
-            red2 = cv2.inRange(
+        else:
+            b1 = cv2.inRange(
                 roi_hsv,
-                np.array([RED_H2_MIN, RED_S_MIN, RED_V_MIN], dtype=np.uint8),
-                np.array([180, 255, 255], dtype=np.uint8)
+                np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
+                np.array([179, 255, 255], dtype=np.uint8)
             )
-            red_mask = cv2.bitwise_or(red1, red2)
-            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel_open)
-            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel_open)
-
-            # ----------------------------
-            # Blue mask
-            # ----------------------------
-            if BLUE_H_MIN <= BLUE_H_MAX:
-                blue_mask = cv2.inRange(
-                    roi_hsv,
-                    np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
-                    np.array([BLUE_H_MAX, 255, 255], dtype=np.uint8)
-                )
-            else:
-                # fallback, though normal use should keep min <= max
-                b1 = cv2.inRange(
-                    roi_hsv,
-                    np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
-                    np.array([179, 255, 255], dtype=np.uint8)
-                )
-                b2 = cv2.inRange(
-                    roi_hsv,
-                    np.array([0, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
-                    np.array([BLUE_H_MAX, 255, 255], dtype=np.uint8)
-                )
-                blue_mask = cv2.bitwise_or(b1, b2)
-
-            blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel_open)
-            blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel_open)
-
-            # ----------------------------
-            # Black mask
-            # ----------------------------
-            v = roi_hsv[:, :, 2]
-            black_mask = np.where(v <= BLACK_V_MAX, 255, 0).astype(np.uint8)
-            black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel_open)
-            black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel_open)
-
-            total = roi.shape[0] * roi.shape[1] + 1e-6
-            red_ratio = np.count_nonzero(red_mask) / total
-            blue_ratio = np.count_nonzero(blue_mask) / total
-            black_ratio = np.count_nonzero(black_mask) / total
-
-            red_mask_full[ry:ry+rh, rx:rx+rw] = red_mask
-            blue_mask_full[ry:ry+rh, rx:rx+rw] = blue_mask
-            black_mask_full[ry:ry+rh, rx:rx+rw] = black_mask
-
-            # ----------------------------
-            # Decision logic
-            # ----------------------------
-            # O must have strong red, low blue, and red must beat blue
-            obstacle_ok = (
-                red_ratio >= RED_RATIO_TH and
-                blue_ratio <= BLUE_RATIO_MAX and
-                red_ratio > blue_ratio * RB_MARGIN
+            b2 = cv2.inRange(
+                roi_hsv,
+                np.array([0, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
+                np.array([BLUE_H_MAX, 255, 255], dtype=np.uint8)
             )
+            blue_mask = cv2.bitwise_or(b1, b2)
 
-            # T must have strong black and not be overwhelmed by blue
-            target_ok = (
-                black_ratio >= BLACK_RATIO_TH and
-                black_ratio > blue_ratio * TB_MARGIN
-            )
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel_open)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel_close)
 
-            if obstacle_ok and not target_ok:
-                label = "O"
-            elif target_ok and not obstacle_ok:
-                label = "T"
-            elif obstacle_ok and target_ok:
-                # choose stronger of the two
-                if red_ratio > black_ratio:
+        # ----------------------------
+        # Black mask
+        # ----------------------------
+        v = roi_hsv[:, :, 2]
+        black_mask = np.where(v <= BLACK_V_MAX, 255, 0).astype(np.uint8)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel_open)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel_close)
+
+        total = float(rw * rh) + 1e-6
+        white_ratio_i = np.count_nonzero(white_roi) / total
+        red_ratio_i = np.count_nonzero(red_mask) / total
+        blue_ratio_i = np.count_nonzero(blue_mask) / total
+        black_ratio_i = np.count_nonzero(black_mask) / total
+
+        # Candidate must really look like a white card
+        if white_ratio_i < WHITE_RATIO_MIN:
+            continue
+
+        obstacle_ok = (
+            red_ratio_i >= RED_RATIO_TH and
+            blue_ratio_i <= BLUE_RATIO_MAX and
+            red_ratio_i > blue_ratio_i * RB_MARGIN
+        )
+
+        target_ok = (
+            black_ratio_i >= BLACK_RATIO_TH and
+            black_ratio_i > blue_ratio_i * TB_MARGIN
+        )
+
+        # Use strongest valid candidate
+        score = max(red_ratio_i, black_ratio_i)
+
+        if obstacle_ok or target_ok:
+            if score > best_score:
+                best_score = score
+                found_area = area
+                red_ratio = red_ratio_i
+                blue_ratio = blue_ratio_i
+                black_ratio = black_ratio_i
+                white_ratio = white_ratio_i
+                best_rect = (rx, ry, rw, rh)
+
+                red_mask_full[:] = 0
+                blue_mask_full[:] = 0
+                black_mask_full[:] = 0
+                red_mask_full[ry:ry+rh, rx:rx+rw] = red_mask
+                blue_mask_full[ry:ry+rh, rx:rx+rw] = blue_mask
+                black_mask_full[ry:ry+rh, rx:rx+rw] = black_mask
+
+                if obstacle_ok and not target_ok:
                     label = "O"
-                else:
+                elif target_ok and not obstacle_ok:
                     label = "T"
-            else:
-                label = "E"
+                else:
+                    label = "O" if red_ratio_i > black_ratio_i else "T"
+
+    if best_rect is not None:
+        rx, ry, rw, rh = best_rect
+        cv2.rectangle(work, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
+        cv2.rectangle(display, (x0 + rx, y0 + ry), (x0 + rx + rw, y0 + ry + rh), (0, 255, 0), 2)
 
     # Small ROI preview
     work_small = cv2.resize(work, (180, 180))
     display[10:190, FRAME_WIDTH-190:FRAME_WIDTH-10] = work_small
 
     # On-screen text
-    cv2.putText(display, f"Label: {label}", (20, FRAME_HEIGHT - 110),
+    cv2.putText(display, f"Label: {label}", (20, FRAME_HEIGHT - 135),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"white_area: {found_area:.0f}", (20, FRAME_HEIGHT - 80),
+    cv2.putText(display, f"white_area: {found_area:.0f}", (20, FRAME_HEIGHT - 105),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"red_ratio: {red_ratio:.3f}", (20, FRAME_HEIGHT - 50),
+    cv2.putText(display, f"white_ratio: {white_ratio:.3f}", (20, FRAME_HEIGHT - 75),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"blue_ratio: {blue_ratio:.3f}", (220, FRAME_HEIGHT - 50),
+    cv2.putText(display, f"red_ratio: {red_ratio:.3f}", (20, FRAME_HEIGHT - 45),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"black_ratio: {black_ratio:.3f}", (420, FRAME_HEIGHT - 50),
+    cv2.putText(display, f"blue_ratio: {blue_ratio:.3f}", (220, FRAME_HEIGHT - 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(display, f"black_ratio: {black_ratio:.3f}", (420, FRAME_HEIGHT - 45),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
 
-    cv2.putText(display, "Goal: purple tile should NOT become O", (20, FRAME_HEIGHT - 20),
+    cv2.putText(display, "Goal: purple tile should NOT become O", (20, FRAME_HEIGHT - 15),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 1, cv2.LINE_AA)
 
     cv2.imshow(WINDOW_MAIN, display)
