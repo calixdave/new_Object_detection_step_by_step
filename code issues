@@ -2,17 +2,11 @@ import cv2
 import numpy as np
 
 # =========================================================
-# LIVE OBJECT TUNER - updated
+# LIVE OBJECT TUNER - updated with your latest defaults
 #
 # O = obstacle = white card with thick red X
 # T = target   = white card with thick black X
 # E = empty
-#
-# Improvements:
-# - checks all white candidates instead of only biggest contour
-# - uses proper close kernel
-# - scores candidates more robustly
-# - adds white_ratio debugging
 # =========================================================
 
 CAMERA_INDEX = 0
@@ -60,37 +54,35 @@ cv2.moveWindow(WINDOW_BLACK, 1000, 800)
 # Trackbars
 # ----------------------------
 # White card detection
-cv2.createTrackbar("WHITE_S_MAX", WINDOW_MAIN, 75, 255, nothing)
-cv2.createTrackbar("WHITE_V_MIN", WINDOW_MAIN, 140, 255, nothing)
+cv2.createTrackbar("WHITE_S_MAX", WINDOW_MAIN, 184, 255, nothing)
+cv2.createTrackbar("WHITE_V_MIN", WINDOW_MAIN, 170, 255, nothing)
 cv2.createTrackbar("MIN_WHITE_AREA", WINDOW_MAIN, 2500, 30000, nothing)
 
 # Red thresholds
-cv2.createTrackbar("RED_H1_MAX", WINDOW_MAIN, 10, 30, nothing)
-cv2.createTrackbar("RED_H2_MIN", WINDOW_MAIN, 172, 180, nothing)
-cv2.createTrackbar("RED_S_MIN", WINDOW_MAIN, 120, 255, nothing)
-cv2.createTrackbar("RED_V_MIN", WINDOW_MAIN, 100, 255, nothing)
+cv2.createTrackbar("RED_H1_MAX", WINDOW_MAIN, 24, 30, nothing)
+cv2.createTrackbar("RED_H2_MIN", WINDOW_MAIN, 15, 180, nothing)
+cv2.createTrackbar("RED_S_MIN", WINDOW_MAIN, 47, 255, nothing)
+cv2.createTrackbar("RED_V_MIN", WINDOW_MAIN, 0, 255, nothing)
 
-# Blue thresholds (to reject purple)
-cv2.createTrackbar("BLUE_H_MIN", WINDOW_MAIN, 95, 179, nothing)
-cv2.createTrackbar("BLUE_H_MAX", WINDOW_MAIN, 145, 179, nothing)
-cv2.createTrackbar("BLUE_S_MIN", WINDOW_MAIN, 80, 255, nothing)
-cv2.createTrackbar("BLUE_V_MIN", WINDOW_MAIN, 60, 255, nothing)
+# Blue thresholds
+cv2.createTrackbar("BLUE_H_MIN", WINDOW_MAIN, 147, 179, nothing)
+cv2.createTrackbar("BLUE_H_MAX", WINDOW_MAIN, 174, 179, nothing)
+cv2.createTrackbar("BLUE_S_MIN", WINDOW_MAIN, 0, 255, nothing)
+cv2.createTrackbar("BLUE_V_MIN", WINDOW_MAIN, 0, 255, nothing)
 
 # Black thresholds
-cv2.createTrackbar("BLACK_V_MAX", WINDOW_MAIN, 70, 255, nothing)
+cv2.createTrackbar("BLACK_V_MAX", WINDOW_MAIN, 196, 255, nothing)
 
 # Decision thresholds
-cv2.createTrackbar("RED_RATIO_x100", WINDOW_MAIN, 20, 100, nothing)
-cv2.createTrackbar("BLACK_RATIO_x100", WINDOW_MAIN, 20, 100, nothing)
-cv2.createTrackbar("BLUE_RATIO_MAX_x100", WINDOW_MAIN, 12, 100, nothing)
+cv2.createTrackbar("RED_RATIO_x100", WINDOW_MAIN, 33, 100, nothing)
+cv2.createTrackbar("BLACK_RATIO_x100", WINDOW_MAIN, 26, 100, nothing)
+cv2.createTrackbar("BLUE_RATIO_MAX_x100", WINDOW_MAIN, 78, 100, nothing)
 cv2.createTrackbar("RB_MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
 cv2.createTrackbar("TB_MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
-
-# Extra white-card filter
 cv2.createTrackbar("WHITE_RATIO_MIN_x100", WINDOW_MAIN, 18, 100, nothing)
 
 # Morphology
-cv2.createTrackbar("OPEN_K", WINDOW_MAIN, 3, 15, nothing)
+cv2.createTrackbar("OPEN_K", WINDOW_MAIN, 0, 15, nothing)
 cv2.createTrackbar("CLOSE_K", WINDOW_MAIN, 5, 15, nothing)
 
 cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -139,6 +131,7 @@ while True:
 
     OPEN_K = max(1, cv2.getTrackbarPos("OPEN_K", WINDOW_MAIN))
     CLOSE_K = max(1, cv2.getTrackbarPos("CLOSE_K", WINDOW_MAIN))
+
     if OPEN_K % 2 == 0:
         OPEN_K += 1
     if CLOSE_K % 2 == 0:
@@ -148,7 +141,7 @@ while True:
     kernel_close = np.ones((CLOSE_K, CLOSE_K), np.uint8)
 
     # ----------------------------
-    # Blue guide box
+    # Center guide box
     # ----------------------------
     H, W = frame.shape[:2]
     x0 = W // 2 - BOX_HALF_W
@@ -260,7 +253,6 @@ while True:
         blue_ratio_i = np.count_nonzero(blue_mask) / total
         black_ratio_i = np.count_nonzero(black_mask) / total
 
-        # Candidate must really look like a white card
         if white_ratio_i < WHITE_RATIO_MIN:
             continue
 
@@ -275,7 +267,6 @@ while True:
             black_ratio_i > blue_ratio_i * TB_MARGIN
         )
 
-        # Use strongest valid candidate
         score = max(red_ratio_i, black_ratio_i)
 
         if obstacle_ok or target_ok:
