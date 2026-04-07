@@ -1,502 +1,495 @@
 import os
-import json
 import cv2
 import numpy as np
 
 # =========================================================
-# CONFIG
+# detect_objects.py
+#
+# OpenCV-only object detection for Raspberry Pi pipeline
+# Strong bias toward E (empty) to reduce false O / T / ?
+#
+# Expected markers:
+#   O = obstacle = white box with thick RED X
+#   T = target   = white box with thick BLACK X
+#   E = empty
+#   ? = uncertain (used rarely on purpose)
+#
+# Pipeline:
+#   capture_scan.py -> detect_colors.py -> detect_objects.py -> map_location.py
+#
+# Inputs:
+#   scan_images/front.jpg
+#   scan_images/right.jpg
+#   scan_images/back.jpg
+#   scan_images/left.jpg
+#
+# Outputs:
+#   results/local_object_3x3.txt
+#   results/final_object_3x3.txt
+#   results/object_debug/*.jpg
 # =========================================================
 
+# -----------------------------
+# Paths
+# -----------------------------
 SCAN_DIR = "scan_images"
-DEBUG_DIR = "debug_objects"
 RESULTS_DIR = "results"
+DEBUG_DIR = os.path.join(RESULTS_DIR, "object_debug")
 
 HEADINGS = ["front", "right", "back", "left"]
 
+# -----------------------------
+# ROI / slot settings
+# -----------------------------
 ROI_TOP_FRAC = 0.34
 ROI_BOT_FRAC = 0.94
+PAD_X_FRAC = 0.03
+PAD_Y_FRAC = 0.06
 
-SLOT_PAD_X_FRAC = 0.03
-SLOT_PAD_Y_FRAC = 0.06
+# -----------------------------
+# Detection settings
+# -----------------------------
+# White card/background detection
+WHITE_S_MAX = 70
+WHITE_V_MIN = 130
+MIN_WHITE_RATIO = 0.30
+MIN_LARGEST_WHITE_AREA_RATIO = 0.08
 
-# white box detection
-WHITE_MIN = 145
-MIN_BOX_AREA_FRAC = 0.05
-MAX_BOX_AREA_FRAC = 0.80
-MIN_BOX_FILL = 0.55
-MIN_ASPECT = 0.45
-MAX_ASPECT = 1.90
-CENTER_DIST_FRAC = 0.42
+# Red-X detection
+RED_S_MIN = 85
+RED_V_MIN = 90
+MIN_RED_DIAG_RATIO = 0.10
 
-# red symbol
-RED_S_MIN = 95
-RED_V_MIN = 110
+# Black-X detection
+BLACK_V_MAX = 75
+MAX_BLACK_RATIO_FOR_EMPTY = 0.06
+MIN_BLACK_DIAG_RATIO = 0.16
 
-# black symbol
-BLACK_MAX = 85
+# Strong empty bias
+UNCERTAIN_TO_EMPTY = True
+USE_QUESTION_MARK = False   # keep false ? very low
+VERY_STRONG_NONEMPTY = 0.24
 
-# symbol scoring
-NORM_SIZE = 120
-INNER_MARGIN_FRAC = 0.16
-DIAG_BAND_FRAC = 0.12
+# Resized analysis size
+ANALYSIS_SIZE = 120
 
-MIN_RED_RATIO = 0.015
-MIN_BLACK_RATIO = 0.020
+# Morphology
+KERNEL3 = np.ones((3, 3), np.uint8)
+KERNEL5 = np.ones((5, 5), np.uint8)
 
-MIN_X_DIAG_SCORE = 0.085
-MAX_HV_SCORE = 0.080
-
-# decision margin
-SYMBOL_SCORE_MARGIN = 0.015
-
-HEADING_TO_POSITIONS = {
-    "front": [(-1, +1), (0, +1), (+1, +1)],
-    "right": [(+1, +1), (+1, 0), (+1, -1)],
-    "back":  [(+1, -1), (0, -1), (-1, -1)],
-    "left":  [(-1, -1), (-1, 0), (-1, +1)],
+# -----------------------------
+# Mapping logic (same style)
+# -----------------------------
+# local grid coordinates:
+#   row,col in [0..2], center = (1,1)
+# capture slots are left,middle,right for each heading
+HEADING_SLOT_TO_CELL = {
+    "front": [(0, 0), (0, 1), (0, 2)],
+    "right": [(0, 2), (1, 2), (2, 2)],
+    "back":  [(2, 2), (2, 1), (2, 0)],
+    "left":  [(2, 0), (1, 0), (0, 0)],
 }
 
+# -----------------------------
+# Utility
+# -----------------------------
+def ensure_dirs():
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(DEBUG_DIR, exist_ok=True)
 
-# =========================================================
-# ROI / SLOT HELPERS
-# =========================================================
+def pretty_matrix(mat):
+    return "\n".join(" ".join(row) for row in mat)
 
-def get_three_slot_rois(img):
+def save_matrix_txt(path, mat):
+    with open(path, "w") as f:
+        for row in mat:
+            f.write(",".join(row) + "\n")
+
+def load_image_for_heading(heading):
+    for ext in [".jpg", ".jpeg", ".png"]:
+        path = os.path.join(SCAN_DIR, heading + ext)
+        if os.path.exists(path):
+            img = cv2.imread(path)
+            if img is not None:
+                return img, path
+    return None, None
+
+def get_slot_crop(img, slot_idx):
     h, w = img.shape[:2]
 
-    y0 = int(ROI_TOP_FRAC * h)
-    y1 = int(ROI_BOT_FRAC * h)
+    y0 = int(h * ROI_TOP_FRAC)
+    y1 = int(h * ROI_BOT_FRAC)
 
-    if y1 <= y0:
-        return []
+    slot_w = w / 3.0
+    x0 = int(slot_idx * slot_w + w * PAD_X_FRAC)
+    x1 = int((slot_idx + 1) * slot_w - w * PAD_X_FRAC)
 
-    band = img[y0:y1, :]
-    bh, bw = band.shape[:2]
+    pad_y = int(h * PAD_Y_FRAC)
+    y0 = max(0, y0 + pad_y)
+    y1 = min(h, y1 - pad_y)
 
-    slots = []
+    x0 = max(0, x0)
+    x1 = min(w, x1)
 
-    for i in range(3):
-        sx0 = int(i * bw / 3)
-        sx1 = int((i + 1) * bw / 3)
+    if x1 <= x0 or y1 <= y0:
+        return None, (x0, y0, x1, y1)
 
-        pad_x = int(SLOT_PAD_X_FRAC * (sx1 - sx0))
-        pad_y = int(SLOT_PAD_Y_FRAC * bh)
+    crop = img[y0:y1, x0:x1].copy()
+    return crop, (x0, y0, x1, y1)
 
-        cx0 = max(0, sx0 + pad_x)
-        cx1 = min(bw, sx1 - pad_x)
-        cy0 = max(0, pad_y)
-        cy1 = min(bh, bh - pad_y)
+def make_diag_masks(size=ANALYSIS_SIZE, thickness=18):
+    yy, xx = np.indices((size, size))
+    d1 = np.abs(xx - yy) <= thickness
+    d2 = np.abs(xx - ((size - 1) - yy)) <= thickness
+    diag_union = (d1 | d2).astype(np.uint8) * 255
+    center = np.zeros((size, size), dtype=np.uint8)
+    c0 = size // 2 - size // 8
+    c1 = size // 2 + size // 8
+    center[c0:c1, c0:c1] = 255
+    return diag_union, center
 
-        crop = band[cy0:cy1, cx0:cx1]
-        slots.append(crop)
+DIAG_MASK, CENTER_MASK = make_diag_masks()
 
-    return slots
+def largest_contour_area_ratio(mask):
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return 0.0, None
+    areas = [cv2.contourArea(c) for c in cnts]
+    idx = int(np.argmax(areas))
+    largest = cnts[idx]
+    area = areas[idx]
+    total = mask.shape[0] * mask.shape[1]
+    return area / float(total + 1e-6), largest
 
+def mask_ratio(mask):
+    return float(np.count_nonzero(mask)) / float(mask.size + 1e-6)
 
-def matrix_rows_from_grid(final_grid):
-    rows = []
-    for row in [1, 0, -1]:
-        vals = []
-        for col in [-1, 0, 1]:
-            vals.append(final_grid.get((col, row), "?"))
-        rows.append(vals)
-    return rows
+def diag_overlap_ratio(mask_binary):
+    diag = cv2.bitwise_and(mask_binary, DIAG_MASK)
+    diag_count = np.count_nonzero(DIAG_MASK)
+    return float(np.count_nonzero(diag)) / float(diag_count + 1e-6)
 
+def center_overlap_ratio(mask_binary):
+    center = cv2.bitwise_and(mask_binary, CENTER_MASK)
+    center_count = np.count_nonzero(CENTER_MASK)
+    return float(np.count_nonzero(center)) / float(center_count + 1e-6)
 
-def pretty_print_matrix(final_grid):
-    rows = matrix_rows_from_grid(final_grid)
-    for row in rows:
-        print(" ".join(row))
+def prepare_slot(crop):
+    if crop is None or crop.size == 0:
+        return None
+    blur = cv2.GaussianBlur(crop, (5, 5), 0)
+    rs = cv2.resize(blur, (ANALYSIS_SIZE, ANALYSIS_SIZE), interpolation=cv2.INTER_AREA)
+    return rs
 
+def white_mask_from_hsv(hsv):
+    # low saturation + high value
+    lower = np.array([0, 0, WHITE_V_MIN], dtype=np.uint8)
+    upper = np.array([180, WHITE_S_MAX, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, KERNEL3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, KERNEL5)
+    return mask
 
-def save_matrix_txt(path, final_grid):
-    rows = matrix_rows_from_grid(final_grid)
-    with open(path, "w") as f:
-        for row in rows:
-            f.write(" ".join(row) + "\n")
+def red_mask_from_hsv(hsv):
+    lower1 = np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
+    upper1 = np.array([12, 255, 255], dtype=np.uint8)
+    lower2 = np.array([168, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
+    upper2 = np.array([180, 255, 255], dtype=np.uint8)
 
+    m1 = cv2.inRange(hsv, lower1, upper1)
+    m2 = cv2.inRange(hsv, lower2, upper2)
+    mask = cv2.bitwise_or(m1, m2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, KERNEL3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, KERNEL3)
+    return mask
 
-# =========================================================
-# WHITE BOX DETECTION
-# =========================================================
+def black_mask_from_hsv(hsv):
+    # black X can be low V even if some saturation exists
+    v = hsv[:, :, 2]
+    mask = np.where(v <= BLACK_V_MAX, 255, 0).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, KERNEL3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, KERNEL3)
+    return mask
 
-def find_best_white_box(slot_bgr):
-    h, w = slot_bgr.shape[:2]
-    slot_area = float(h * w)
+def analyze_slot(crop, heading, slot_idx):
+    """
+    Returns:
+        label, confidence, info, debug_img
+    """
+    rs = prepare_slot(crop)
+    if rs is None:
+        return "E", 0.0, {"reason": "empty_crop"}, np.zeros((ANALYSIS_SIZE, ANALYSIS_SIZE, 3), dtype=np.uint8)
 
-    gray = cv2.cvtColor(slot_bgr, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    hsv = cv2.cvtColor(rs, cv2.COLOR_BGR2HSV)
 
-    white_mask = cv2.inRange(blur, WHITE_MIN, 255)
+    white_mask = white_mask_from_hsv(hsv)
+    red_mask = red_mask_from_hsv(hsv)
+    black_mask = black_mask_from_hsv(hsv)
 
-    kernel = np.ones((3, 3), np.uint8)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
+    white_ratio = mask_ratio(white_mask)
+    largest_white_ratio, largest_white_cnt = largest_contour_area_ratio(white_mask)
 
-    contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    red_ratio = mask_ratio(red_mask)
+    black_ratio = mask_ratio(black_mask)
 
-    best = None
-    slot_cx = w / 2.0
-    slot_cy = h / 2.0
-    max_center_dist = CENTER_DIST_FRAC * min(w, h)
+    red_diag_ratio = diag_overlap_ratio(red_mask)
+    black_diag_ratio = diag_overlap_ratio(black_mask)
 
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area <= 0:
-            continue
+    red_center_ratio = center_overlap_ratio(red_mask)
+    black_center_ratio = center_overlap_ratio(black_mask)
 
-        area_frac = area / slot_area
-        if area_frac < MIN_BOX_AREA_FRAC or area_frac > MAX_BOX_AREA_FRAC:
-            continue
-
-        x, y, bw, bh = cv2.boundingRect(cnt)
-        if bw <= 0 or bh <= 0:
-            continue
-
-        aspect = bw / float(bh)
-        if aspect < MIN_ASPECT or aspect > MAX_ASPECT:
-            continue
-
-        rect_area = float(bw * bh)
-        fill = area / rect_area
-        if fill < MIN_BOX_FILL:
-            continue
-
-        cx = x + bw / 2.0
-        cy = y + bh / 2.0
-        center_dist = float(np.hypot(cx - slot_cx, cy - slot_cy))
-        if center_dist > max_center_dist:
-            continue
-
-        score = (2.2 * area_frac) + (1.1 * fill) - (0.9 * center_dist / max_center_dist)
-
-        cand = {
-            "x": x,
-            "y": y,
-            "w": bw,
-            "h": bh,
-            "area_frac": area_frac,
-            "fill": fill,
-            "aspect": aspect,
-            "center_dist": center_dist,
-            "score": score,
-            "white_mask": white_mask
-        }
-
-        if best is None or cand["score"] > best["score"]:
-            best = cand
-
-    return best
-
-
-# =========================================================
-# SYMBOL DETECTION INSIDE BOX
-# =========================================================
-
-def build_geometry_masks(n=NORM_SIZE, margin_frac=INNER_MARGIN_FRAC, band_frac=DIAG_BAND_FRAC):
-    yy, xx = np.mgrid[0:n, 0:n].astype(np.float32)
-
-    m = int(margin_frac * n)
-    valid = (
-        (xx >= m) & (xx < n - m) &
-        (yy >= m) & (yy < n - m)
+    # White card presence gate
+    white_present = (
+        white_ratio >= MIN_WHITE_RATIO
+        and largest_white_ratio >= MIN_LARGEST_WHITE_AREA_RATIO
     )
 
-    d1 = np.abs(yy - xx)
-    d2 = np.abs(yy - ((n - 1) - xx))
-    band = band_frac * n
+    # Debug overlay image
+    dbg = rs.copy()
 
-    diag1 = (d1 <= band) & valid
-    diag2 = (d2 <= band) & valid
+    if largest_white_cnt is not None:
+        cv2.drawContours(dbg, [largest_white_cnt], -1, (0, 255, 0), 2)
 
-    cross = (diag1 | diag2) & valid
+    # draw diagonal guides
+    diag_vis = dbg.copy()
+    diag_pixels = np.where(DIAG_MASK > 0)
+    diag_vis[diag_pixels] = (0.7 * diag_vis[diag_pixels] + 0.3 * np.array([255, 0, 0])).astype(np.uint8)
+    dbg = diag_vis
 
-    # reject masks for vertical/horizontal dominance
-    cx = (n - 1) / 2.0
-    cy = (n - 1) / 2.0
-    vband = (np.abs(xx - cx) <= band) & valid
-    hband = (np.abs(yy - cy) <= band) & valid
-
-    return valid, diag1, diag2, cross, hband, vband
-
-
-VALID_MASK, DIAG1_MASK, DIAG2_MASK, CROSS_MASK, HBAND_MASK, VBAND_MASK = build_geometry_masks()
-
-
-def mask_ratios(mask):
-    valid_pixels = np.count_nonzero(VALID_MASK)
-    if valid_pixels == 0:
-        return 0.0, 0.0, 0.0, 0.0
-
-    diag1_ratio = float(np.count_nonzero(mask & DIAG1_MASK)) / valid_pixels
-    diag2_ratio = float(np.count_nonzero(mask & DIAG2_MASK)) / valid_pixels
-    h_ratio = float(np.count_nonzero(mask & HBAND_MASK)) / valid_pixels
-    v_ratio = float(np.count_nonzero(mask & VBAND_MASK)) / valid_pixels
-    return diag1_ratio, diag2_ratio, h_ratio, v_ratio
-
-
-def preprocess_box(box_bgr):
-    norm = cv2.resize(box_bgr, (NORM_SIZE, NORM_SIZE), interpolation=cv2.INTER_AREA)
-    hsv = cv2.cvtColor(norm, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(norm, cv2.COLOR_BGR2GRAY)
-
-    # red mask
-    lower_red1 = np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
-    upper_red1 = np.array([10, 255, 255], dtype=np.uint8)
-    lower_red2 = np.array([170, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
-    upper_red2 = np.array([180, 255, 255], dtype=np.uint8)
-
-    red1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    red2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    red_mask = cv2.bitwise_or(red1, red2)
-
-    # black mask
-    black_mask = cv2.inRange(gray, 0, BLACK_MAX)
-
-    kernel = np.ones((3, 3), np.uint8)
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
-
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
-
-    red_bool = red_mask > 0
-    black_bool = black_mask > 0
-
-    return norm, red_mask, black_mask, red_bool, black_bool
-
-
-def score_x_symbol(mask_bool):
-    diag1_ratio, diag2_ratio, h_ratio, v_ratio = mask_ratios(mask_bool)
-
-    total_ratio = float(np.count_nonzero(mask_bool & VALID_MASK)) / float(np.count_nonzero(VALID_MASK))
-
-    # X score rewards both diagonals being present
-    x_score = min(diag1_ratio, diag2_ratio)
-
-    # penalize strong horizontal/vertical central blobs
-    hv_score = max(h_ratio, v_ratio)
-
-    return {
-        "total_ratio": total_ratio,
-        "diag1_ratio": diag1_ratio,
-        "diag2_ratio": diag2_ratio,
-        "h_ratio": h_ratio,
-        "v_ratio": v_ratio,
-        "x_score": x_score,
-        "hv_score": hv_score,
+    info = {
+        "white_present": white_present,
+        "white_ratio": round(white_ratio, 4),
+        "largest_white_ratio": round(largest_white_ratio, 4),
+        "red_ratio": round(red_ratio, 4),
+        "black_ratio": round(black_ratio, 4),
+        "red_diag_ratio": round(red_diag_ratio, 4),
+        "black_diag_ratio": round(black_diag_ratio, 4),
+        "red_center_ratio": round(red_center_ratio, 4),
+        "black_center_ratio": round(black_center_ratio, 4),
     }
 
+    # ---------------------------------------------------------
+    # Strong empty bias:
+    # if no strong white-card evidence -> E immediately
+    # ---------------------------------------------------------
+    if not white_present:
+        label = "E"
+        confidence = 1.0 - max(red_diag_ratio, black_diag_ratio)
+        info["reason"] = "no_white_card"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
-def classify_symbol_in_box(box_bgr):
-    norm, red_mask, black_mask, red_bool, black_bool = preprocess_box(box_bgr)
-
-    red_stats = score_x_symbol(red_bool)
-    black_stats = score_x_symbol(black_bool)
-
-    red_ok = (
-        red_stats["total_ratio"] >= MIN_RED_RATIO and
-        red_stats["x_score"] >= MIN_X_DIAG_SCORE and
-        red_stats["hv_score"] <= MAX_HV_SCORE
+    # ---------------------------------------------------------
+    # Obstacle = red X on white box
+    # Need strong red diagonal evidence
+    # ---------------------------------------------------------
+    red_score = (
+        1.10 * red_diag_ratio
+        + 0.35 * red_center_ratio
+        + 0.15 * red_ratio
     )
 
-    black_ok = (
-        black_stats["total_ratio"] >= MIN_BLACK_RATIO and
-        black_stats["x_score"] >= MIN_X_DIAG_SCORE and
-        black_stats["hv_score"] <= MAX_HV_SCORE
+    # ---------------------------------------------------------
+    # Target = black X on white box
+    # Need strong black diagonal evidence
+    # ---------------------------------------------------------
+    black_score = (
+        1.15 * black_diag_ratio
+        + 0.30 * black_center_ratio
+        + 0.10 * min(black_ratio, 0.25)
     )
 
-    if red_ok and (red_stats["x_score"] >= black_stats["x_score"] + SYMBOL_SCORE_MARGIN):
-        return "O", norm, red_mask, black_mask, red_stats, black_stats
+    # Empty preference if both are weak
+    max_score = max(red_score, black_score)
 
-    if black_ok and (black_stats["x_score"] >= red_stats["x_score"] + SYMBOL_SCORE_MARGIN):
-        return "T", norm, red_mask, black_mask, red_stats, black_stats
+    # Reject weak clutter/noise
+    if max_score < 0.12:
+        label = "E"
+        confidence = 0.90
+        info["reason"] = "weak_nonempty_signal"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
-    if red_ok and not black_ok:
-        return "O", norm, red_mask, black_mask, red_stats, black_stats
+    # Strong obstacle
+    if (
+        red_diag_ratio >= MIN_RED_DIAG_RATIO
+        and red_score > black_score * 1.20
+        and red_score >= 0.16
+    ):
+        label = "O"
+        confidence = min(0.99, red_score)
+        info["reason"] = "strong_red_x"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
-    if black_ok and not red_ok:
-        return "T", norm, red_mask, black_mask, red_stats, black_stats
+    # Strong target
+    if (
+        black_diag_ratio >= MIN_BLACK_DIAG_RATIO
+        and black_score > red_score * 1.15
+        and black_score >= 0.18
+    ):
+        label = "T"
+        confidence = min(0.99, black_score)
+        info["reason"] = "strong_black_x"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
-    return "E", norm, red_mask, black_mask, red_stats, black_stats
+    # Very strong one-sided evidence can still pass
+    if red_score >= VERY_STRONG_NONEMPTY and red_score > black_score * 1.05:
+        label = "O"
+        confidence = min(0.99, red_score)
+        info["reason"] = "very_strong_red"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
+    if black_score >= VERY_STRONG_NONEMPTY and black_score > red_score * 1.05:
+        label = "T"
+        confidence = min(0.99, black_score)
+        info["reason"] = "very_strong_black"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
-# =========================================================
-# OBJECT DETECTION
-# =========================================================
+    # Ambiguous -> default to E
+    if UNCERTAIN_TO_EMPTY:
+        label = "E"
+        confidence = 0.70
+        info["reason"] = "ambiguous_to_empty"
+        put_debug_text(dbg, label, confidence, info)
+        return label, confidence, info, dbg
 
-def detect_one_object_slot(slot_bgr):
-    if slot_bgr is None or slot_bgr.size == 0:
-        return "E", {"reason": "empty_slot"}
+    # Rare fallback
+    label = "?" if USE_QUESTION_MARK else "E"
+    confidence = 0.50
+    info["reason"] = "uncertain"
+    put_debug_text(dbg, label, confidence, info)
+    return label, confidence, info, dbg
 
-    best_box = find_best_white_box(slot_bgr)
-
-    if best_box is None:
-        return "E", {
-            "reason": "no_good_white_box"
-        }
-
-    x = best_box["x"]
-    y = best_box["y"]
-    w = best_box["w"]
-    h = best_box["h"]
-
-    box_bgr = slot_bgr[y:y+h, x:x+w]
-    if box_bgr.size == 0:
-        return "E", {
-            "reason": "bad_box_crop"
-        }
-
-    obj_char, norm, red_mask, black_mask, red_stats, black_stats = classify_symbol_in_box(box_bgr)
-
-    metrics = {
-        "box_x": int(x),
-        "box_y": int(y),
-        "box_w": int(w),
-        "box_h": int(h),
-        "box_area_frac": round(best_box["area_frac"], 4),
-        "box_fill": round(best_box["fill"], 4),
-        "box_aspect": round(best_box["aspect"], 4),
-        "center_dist": round(best_box["center_dist"], 2),
-
-        "red_total_ratio": round(red_stats["total_ratio"], 4),
-        "red_diag1_ratio": round(red_stats["diag1_ratio"], 4),
-        "red_diag2_ratio": round(red_stats["diag2_ratio"], 4),
-        "red_h_ratio": round(red_stats["h_ratio"], 4),
-        "red_v_ratio": round(red_stats["v_ratio"], 4),
-        "red_x_score": round(red_stats["x_score"], 4),
-
-        "black_total_ratio": round(black_stats["total_ratio"], 4),
-        "black_diag1_ratio": round(black_stats["diag1_ratio"], 4),
-        "black_diag2_ratio": round(black_stats["diag2_ratio"], 4),
-        "black_h_ratio": round(black_stats["h_ratio"], 4),
-        "black_v_ratio": round(black_stats["v_ratio"], 4),
-        "black_x_score": round(black_stats["x_score"], 4),
-
-        "decision": obj_char
-    }
-
-    return obj_char, metrics
-
-
-# =========================================================
-# DEBUG VIEW
-# =========================================================
-
-def make_debug_view(tile, obj_char, metrics):
-    out = tile.copy()
-
-    if "box_x" in metrics:
-        x = metrics["box_x"]
-        y = metrics["box_y"]
-        w = metrics["box_w"]
-        h = metrics["box_h"]
-        cv2.rectangle(out, (x, y), (x+w, y+h), (0, 255, 255), 2)
-
-    txt = [
-        f"obj={obj_char}",
-        f"red_x={metrics.get('red_x_score', 0):.3f} red_t={metrics.get('red_total_ratio', 0):.3f}",
-        f"blk_x={metrics.get('black_x_score', 0):.3f} blk_t={metrics.get('black_total_ratio', 0):.3f}",
+def put_debug_text(img, label, conf, info):
+    lines = [
+        f"label={label} conf={conf:.3f}",
+        f"white={info.get('white_ratio', 0):.3f} bigW={info.get('largest_white_ratio', 0):.3f}",
+        f"rD={info.get('red_diag_ratio', 0):.3f} r={info.get('red_ratio', 0):.3f}",
+        f"bD={info.get('black_diag_ratio', 0):.3f} b={info.get('black_ratio', 0):.3f}",
+        f"{info.get('reason', '')}",
     ]
+    y = 18
+    for line in lines:
+        cv2.putText(img, line, (4, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
+        y += 16
 
-    y0 = 18
-    for t in txt:
-        cv2.putText(out, t, (6, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA)
-        y0 += 18
+def save_debug_crop(debug_img, heading, slot_idx):
+    path = os.path.join(DEBUG_DIR, f"{heading}_slot{slot_idx}.jpg")
+    cv2.imwrite(path, debug_img)
 
-    return out
+def choose_cell_label(candidates):
+    """
+    candidates = list of (label, confidence, source_heading, slot_idx)
 
+    Strong bias to E:
+    - if no strong O/T -> E
+    - if conflicting O and T -> E
+    - if one strong non-empty and clearly best -> choose it
+    """
+    if not candidates:
+        return "E"
 
-# =========================================================
-# MAIN
-# =========================================================
+    nonempty = [(lab, conf, h, s) for (lab, conf, h, s) in candidates if lab in ("O", "T")]
+    empties = [(lab, conf, h, s) for (lab, conf, h, s) in candidates if lab == "E"]
+
+    if not nonempty:
+        return "E"
+
+    # Sort strongest first
+    nonempty = sorted(nonempty, key=lambda x: x[1], reverse=True)
+
+    best_lab, best_conf, _, _ = nonempty[0]
+
+    # if conflict between top O and top T and close in score -> empty
+    best_O = max([c[1] for c in nonempty if c[0] == "O"], default=-1)
+    best_T = max([c[1] for c in nonempty if c[0] == "T"], default=-1)
+
+    if best_O > 0 and best_T > 0:
+        if abs(best_O - best_T) < 0.06:
+            return "E"
+
+    # if strongest non-empty is not strong enough -> empty
+    if best_conf < 0.18:
+        return "E"
+
+    # if there are 2 non-empty votes of same class, trust it more
+    same_class_count = sum(1 for c in nonempty if c[0] == best_lab and c[1] >= 0.12)
+    if same_class_count >= 2:
+        return best_lab
+
+    # single strong edge sample can pass
+    if best_conf >= VERY_STRONG_NONEMPTY:
+        return best_lab
+
+    return "E"
 
 def main():
-    os.makedirs(DEBUG_DIR, exist_ok=True)
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    ensure_dirs()
 
-    final_grid = {
-        (-1, +1): "?",
-        ( 0, +1): "?",
-        (+1, +1): "?",
-        (-1,  0): "?",
-        ( 0,  0): "A",
-        (+1,  0): "?",
-        (-1, -1): "?",
-        ( 0, -1): "?",
-        (+1, -1): "?",
-    }
+    # Collect candidates for each local 3x3 cell
+    cell_candidates = {(r, c): [] for r in range(3) for c in range(3)}
 
-    detailed = {}
+    # Center is the agent
+    center_fixed = "A"
+
+    print("\n=== OBJECT DETECTION START ===")
 
     for heading in HEADINGS:
-        path = os.path.join(SCAN_DIR, f"{heading}.jpg")
-
-        if not os.path.exists(path):
-            print(f"ERROR: Missing image: {path}")
-            return
-
-        img = cv2.imread(path)
+        img, path = load_image_for_heading(heading)
         if img is None:
-            print(f"ERROR: Could not read image: {path}")
-            return
+            print(f"[WARN] Missing image for heading '{heading}'")
+            continue
 
-        slots = get_three_slot_rois(img)
-        if len(slots) != 3:
-            print(f"ERROR: Could not build 3 slots for heading: {heading}")
-            return
+        print(f"\nHeading: {heading}  ({path})")
 
-        heading_info = []
-        print(f"\nHeading: {heading}")
+        for slot_idx in range(3):
+            crop, rect = get_slot_crop(img, slot_idx)
+            label, conf, info, dbg = analyze_slot(crop, heading, slot_idx)
+            save_debug_crop(dbg, heading, slot_idx)
 
-        for i, tile in enumerate(slots):
-            obj_char, metrics = detect_one_object_slot(tile)
-            pos = HEADING_TO_POSITIONS[heading][i]
-            final_grid[pos] = obj_char
+            cell = HEADING_SLOT_TO_CELL[heading][slot_idx]
+            if cell != (1, 1):
+                cell_candidates[cell].append((label, conf, heading, slot_idx))
 
-            dbg_img = make_debug_view(tile, obj_char, metrics)
-            dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
-            cv2.imwrite(dbg_name, dbg_img)
+            print(
+                f"  slot {slot_idx}: label={label}, conf={conf:.3f}, "
+                f"cell={cell}, white={info.get('white_ratio', 0):.3f}, "
+                f"rD={info.get('red_diag_ratio', 0):.3f}, "
+                f"bD={info.get('black_diag_ratio', 0):.3f}, "
+                f"reason={info.get('reason', '')}"
+            )
 
-            print(f"  slot {i}: object={obj_char}, saved={dbg_name}")
-            print(f"    metrics: {metrics}")
+    # Build final 3x3 object matrix
+    final_grid = [["E" for _ in range(3)] for _ in range(3)]
+    final_grid[1][1] = center_fixed
 
-            heading_info.append({
-                "slot_index": i,
-                "pos": [pos[0], pos[1]],
-                "object": obj_char,
-                "debug_crop": dbg_name,
-                "metrics": metrics
-            })
+    for r in range(3):
+        for c in range(3):
+            if (r, c) == (1, 1):
+                continue
+            final_grid[r][c] = choose_cell_label(cell_candidates[(r, c)])
 
-        detailed[heading] = heading_info
+    # Save files expected by later stages
+    local_path = os.path.join(RESULTS_DIR, "local_object_3x3.txt")
+    final_path = os.path.join(RESULTS_DIR, "final_object_3x3.txt")
 
-    print("\nFinal 3x3 object matrix:")
-    pretty_print_matrix(final_grid)
+    save_matrix_txt(local_path, final_grid)
+    save_matrix_txt(final_path, final_grid)
 
-    out = {
-        "center": [0, 0],
-        "agent": "A",
-        "grid_objects": {
-            f"{c},{r}": final_grid[(c, r)]
-            for (c, r) in final_grid
-        },
-        "per_heading": detailed
-    }
+    # Optional summary text
+    with open(os.path.join(RESULTS_DIR, "object_summary.txt"), "w") as f:
+        f.write("Final object 3x3:\n")
+        f.write(pretty_matrix(final_grid) + "\n")
 
-    json_path = os.path.join(RESULTS_DIR, "object_results.json")
-    txt_path = os.path.join(RESULTS_DIR, "local_object_3x3.txt")
-
-    with open(json_path, "w") as f:
-        json.dump(out, f, indent=2)
-
-    save_matrix_txt(txt_path, final_grid)
-
-    print(f"\nSaved: {json_path}")
-    print(f"Saved: {txt_path}")
-    print(f"Saved debug crops in: {DEBUG_DIR}")
-    print("Done.")
-
+    print("\n=== FINAL OBJECT 3x3 ===")
+    print(pretty_matrix(final_grid))
+    print(f"\nSaved: {local_path}")
+    print(f"Saved: {final_path}")
+    print(f"Debug images: {DEBUG_DIR}")
 
 if __name__ == "__main__":
     main()
