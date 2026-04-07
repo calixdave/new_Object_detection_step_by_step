@@ -1,11 +1,373 @@
-MATCHED WINDOW USED FOR COMPACT COLOR: - grid_program_pi_runtime_still_capture_markerfix.py:800
-Traceback (most recent call last):
-  File "/home/ucanlab/Downloads/pi_color_retrain/models/pi_sensing_senior_design.py", line 870, in <module>
+import os
+import json
+import cv2
+import numpy as np
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+SCAN_DIR = "scan_images"
+DEBUG_DIR = "debug_objects"
+RESULTS_DIR = "results"
+
+HEADINGS = ["front", "right", "back", "left"]
+
+# ---------------------------------------------------------
+# ROI / slot config
+# ---------------------------------------------------------
+
+ROI_TOP_FRAC = 0.34
+ROI_BOT_FRAC = 0.94
+
+SLOT_PAD_X_FRAC = 0.03
+SLOT_PAD_Y_FRAC = 0.06
+
+# ---------------------------------------------------------
+# Detection thresholds
+# tuned stricter to reduce false obstacles / '?'
+# ---------------------------------------------------------
+
+WHITE_MIN = 135
+BLACK_MAX = 85
+RED_S_MIN = 105
+RED_V_MIN = 125
+
+# stronger object requirements
+WHITE_RATIO_TH = 0.42
+RED_RATIO_TH = 0.10
+BLACK_RATIO_TH = 0.10
+
+# stronger "empty" defaults
+EMPTY_WHITE_TH = 0.22
+EMPTY_RED_TH = 0.05
+EMPTY_BLACK_TH = 0.18
+
+CANNY1 = 60
+CANNY2 = 160
+HOUGH_TH = 34
+MIN_LINE = 18
+MAX_GAP = 18
+
+BLUR_ODD = 3
+
+CENTER_CROP_FRAC = 0.72   # use center only to avoid floor/background edges
+MIN_X_LINES_EACH = 2      # require stronger X evidence
+
+# Object meaning:
+# O = obstacle   (white box with thick red X)
+# T = target     (white box with thick black X)
+# E = empty
+# ? = unknown
+
+HEADING_TO_POSITIONS = {
+    "front": [(-1, +1), (0, +1), (+1, +1)],
+    "right": [(+1, +1), (+1, 0), (+1, -1)],
+    "back":  [(+1, -1), (0, -1), (-1, -1)],
+    "left":  [(-1, -1), (-1, 0), (-1, +1)],
+}
+
+
+# =========================================================
+# ROI / SLOT HELPERS
+# =========================================================
+
+def get_three_slot_rois(img):
+    h, w = img.shape[:2]
+
+    y0 = int(ROI_TOP_FRAC * h)
+    y1 = int(ROI_BOT_FRAC * h)
+
+    if y1 <= y0:
+        return []
+
+    band = img[y0:y1, :]
+    bh, bw = band.shape[:2]
+
+    slots = []
+
+    for i in range(3):
+        sx0 = int(i * bw / 3)
+        sx1 = int((i + 1) * bw / 3)
+
+        pad_x = int(SLOT_PAD_X_FRAC * (sx1 - sx0))
+        pad_y = int(SLOT_PAD_Y_FRAC * bh)
+
+        cx0 = max(0, sx0 + pad_x)
+        cx1 = min(bw, sx1 - pad_x)
+        cy0 = max(0, pad_y)
+        cy1 = min(bh, bh - pad_y)
+
+        crop = band[cy0:cy1, cx0:cx1]
+        slots.append(crop)
+
+    return slots
+
+
+def center_crop(img, frac=0.72):
+    h, w = img.shape[:2]
+    ch = max(1, int(h * frac))
+    cw = max(1, int(w * frac))
+    y0 = max(0, (h - ch) // 2)
+    x0 = max(0, (w - cw) // 2)
+    return img[y0:y0 + ch, x0:x0 + cw]
+
+
+def matrix_rows_from_grid(final_grid):
+    rows = []
+    for row in [1, 0, -1]:
+        vals = []
+        for col in [-1, 0, 1]:
+            vals.append(final_grid.get((col, row), "?"))
+        rows.append(vals)
+    return rows
+
+
+def pretty_print_matrix(final_grid):
+    rows = matrix_rows_from_grid(final_grid)
+    for row in rows:
+        print(" ".join(row))
+
+
+def save_matrix_txt(path, final_grid):
+    rows = matrix_rows_from_grid(final_grid)
+    with open(path, "w") as f:
+        for row in rows:
+            f.write(" ".join(row) + "\n")
+
+
+# =========================================================
+# OBJECT DETECTION
+# =========================================================
+
+def detect_one_object_slot(slot_bgr):
+    if slot_bgr is None or slot_bgr.size == 0:
+        return "?", {"reason": "empty_slot"}
+
+    work = center_crop(slot_bgr, CENTER_CROP_FRAC)
+    if work is None or work.size == 0:
+        return "?", {"reason": "bad_center_crop"}
+
+    hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+
+    if BLUR_ODD > 1:
+        k = BLUR_ODD if BLUR_ODD % 2 == 1 else BLUR_ODD + 1
+        gray_blur = cv2.GaussianBlur(gray, (k, k), 0)
+    else:
+        gray_blur = gray
+
+    # -------------------------------
+    # red X detection
+    # -------------------------------
+    lower_red1 = np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
+    upper_red1 = np.array([10, 255, 255], dtype=np.uint8)
+    lower_red2 = np.array([170, RED_S_MIN, RED_V_MIN], dtype=np.uint8)
+    upper_red2 = np.array([180, 255, 255], dtype=np.uint8)
+
+    red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    red_mask = cv2.bitwise_or(red1, red2)
+
+    # small cleanup
+    kernel = np.ones((3, 3), np.uint8)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+
+    red_ratio = float(np.count_nonzero(red_mask)) / red_mask.size
+
+    # -------------------------------
+    # white / black area
+    # -------------------------------
+    white_mask = cv2.inRange(gray, WHITE_MIN, 255)
+    black_mask = cv2.inRange(gray, 0, BLACK_MAX)
+
+    white_ratio = float(np.count_nonzero(white_mask)) / white_mask.size
+    black_ratio = float(np.count_nonzero(black_mask)) / black_mask.size
+
+    # -------------------------------
+    # diagonal line detection
+    # -------------------------------
+    edges = cv2.Canny(gray_blur, CANNY1, CANNY2)
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=max(1, HOUGH_TH),
+        minLineLength=max(1, MIN_LINE),
+        maxLineGap=max(0, MAX_GAP)
+    )
+
+    diag_pos = 0
+    diag_neg = 0
+    long_diag_pos = 0
+    long_diag_neg = 0
+
+    h, w = gray.shape[:2]
+    min_good_len = 0.22 * min(h, w)
+
+    if lines is not None:
+        for ln in lines[:, 0]:
+            x1, y1, x2, y2 = ln
+            dx = x2 - x1
+            dy = y2 - y1
+
+            if dx == 0:
+                continue
+
+            ang = np.degrees(np.arctan2(dy, dx))
+            length = float(np.hypot(dx, dy))
+
+            if 28 <= ang <= 62:
+                diag_pos += 1
+                if length >= min_good_len:
+                    long_diag_pos += 1
+            elif -62 <= ang <= -28:
+                diag_neg += 1
+                if length >= min_good_len:
+                    long_diag_neg += 1
+
+    has_x_shape = (diag_pos >= MIN_X_LINES_EACH and diag_neg >= MIN_X_LINES_EACH)
+    has_strong_x = (long_diag_pos >= 1 and long_diag_neg >= 1)
+
+    metrics = {
+        "red_ratio": round(red_ratio, 4),
+        "white_ratio": round(white_ratio, 4),
+        "black_ratio": round(black_ratio, 4),
+        "diag_pos": int(diag_pos),
+        "diag_neg": int(diag_neg),
+        "long_diag_pos": int(long_diag_pos),
+        "long_diag_neg": int(long_diag_neg),
+        "has_x_shape": bool(has_x_shape),
+        "has_strong_x": bool(has_strong_x),
+    }
+
+    # -------------------------------------------------
+    # EARLY EMPTY:
+    # if there is not enough white box and not enough symbol color,
+    # call it empty instead of '?'
+    # -------------------------------------------------
+    if (
+        white_ratio < EMPTY_WHITE_TH and
+        red_ratio < EMPTY_RED_TH and
+        black_ratio < EMPTY_BLACK_TH
+    ):
+        return "E", metrics
+
+    # obstacle = white box + red X
+    if (
+        white_ratio >= WHITE_RATIO_TH and
+        red_ratio >= RED_RATIO_TH and
+        has_x_shape and
+        has_strong_x
+    ):
+        return "O", metrics
+
+    # target = white box + black X
+    if (
+        white_ratio >= WHITE_RATIO_TH and
+        black_ratio >= BLACK_RATIO_TH and
+        has_x_shape and
+        has_strong_x
+    ):
+        return "T", metrics
+
+    # if it looks mostly empty/noisy, bias to empty rather than '?'
+    if white_ratio < 0.30 and red_ratio < 0.08 and black_ratio < 0.22:
+        return "E", metrics
+
+    return "?", metrics
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    final_grid = {
+        (-1, +1): "?",
+        ( 0, +1): "?",
+        (+1, +1): "?",
+        (-1,  0): "?",
+        ( 0,  0): "A",
+        (+1,  0): "?",
+        (-1, -1): "?",
+        ( 0, -1): "?",
+        (+1, -1): "?",
+    }
+
+    detailed = {}
+
+    for heading in HEADINGS:
+        path = os.path.join(SCAN_DIR, f"{heading}.jpg")
+
+        if not os.path.exists(path):
+            print(f"ERROR: Missing image: {path}")
+            return
+
+        img = cv2.imread(path)
+        if img is None:
+            print(f"ERROR: Could not read image: {path}")
+            return
+
+        slots = get_three_slot_rois(img)
+        if len(slots) != 3:
+            print(f"ERROR: Could not build 3 slots for heading: {heading}")
+            return
+
+        heading_info = []
+        print(f"\nHeading: {heading}")
+
+        for i, tile in enumerate(slots):
+            dbg_name = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
+            cv2.imwrite(dbg_name, tile)
+
+            obj_char, metrics = detect_one_object_slot(tile)
+            pos = HEADING_TO_POSITIONS[heading][i]
+            final_grid[pos] = obj_char
+
+            print(f"  slot {i}: object={obj_char}, saved={dbg_name}")
+            print(f"    metrics: {metrics}")
+
+            heading_info.append({
+                "slot_index": i,
+                "pos": [pos[0], pos[1]],
+                "object": obj_char,
+                "debug_crop": dbg_name,
+                "metrics": metrics
+            })
+
+        detailed[heading] = heading_info
+
+    print("\nFinal 3x3 object matrix:")
+    pretty_print_matrix(final_grid)
+
+    out = {
+        "center": [0, 0],
+        "agent": "A",
+        "grid_objects": {
+            f"{c},{r}": final_grid[(c, r)]
+            for (c, r) in final_grid
+        },
+        "per_heading": detailed
+    }
+
+    json_path = os.path.join(RESULTS_DIR, "object_results.json")
+    txt_path = os.path.join(RESULTS_DIR, "local_object_3x3.txt")
+
+    with open(json_path, "w") as f:
+        json.dump(out, f, indent=2)
+
+    save_matrix_txt(txt_path, final_grid)
+
+    print(f"\nSaved: {json_path}")
+    print(f"Saved: {txt_path}")
+    print(f"Saved debug crops in: {DEBUG_DIR}")
+    print("Done.")
+
+
+if __name__ == "__main__":
     main()
-  File "/home/ucanlab/Downloads/pi_color_retrain/models/pi_sensing_senior_design.py", line 853, in main
-    compact_17char = map_location(local_color_3x3, local_object_3x3)
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/ucanlab/Downloads/pi_color_retrain/models/pi_sensing_senior_design.py", line 801, in map_location
-    print(pretty_matrix(best["window - grid_program_pi_runtime_still_capture_markerfix.py:801"]))
-                        ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-KeyError: 'window - grid_program_pi_runtime_still_capture_markerfix.py:801'
