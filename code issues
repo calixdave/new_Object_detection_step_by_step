@@ -2,16 +2,24 @@ import cv2
 import numpy as np
 
 # =========================================================
-# LIVE OBJECT TUNER - updated starting values
+# LIVE OBJECT TUNER - red vs blue version
+#
+# O = obstacle = white card with thick red X
+# T = target   = white card with thick black X
+# E = empty
+#
+# This version helps reject PURPLE tiles being mistaken as O
+# by checking BLUE inside the detected white-card ROI.
 # =========================================================
 
 CAMERA_INDEX = 0
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
-WINDOW_MAIN = "Live Object Tuner"
+WINDOW_MAIN  = "Live Object Tuner"
 WINDOW_WHITE = "White Mask"
-WINDOW_RED = "Red Mask"
+WINDOW_RED   = "Red Mask"
+WINDOW_BLUE  = "Blue Mask"
 WINDOW_BLACK = "Black Mask"
 
 BOX_HALF_W = 120
@@ -26,38 +34,58 @@ def biggest_contour(mask):
         return None
     return max(cnts, key=cv2.contourArea)
 
+# ----------------------------
+# Windows
+# ----------------------------
 cv2.namedWindow(WINDOW_MAIN, cv2.WINDOW_NORMAL)
 cv2.namedWindow(WINDOW_WHITE, cv2.WINDOW_NORMAL)
 cv2.namedWindow(WINDOW_RED, cv2.WINDOW_NORMAL)
+cv2.namedWindow(WINDOW_BLUE, cv2.WINDOW_NORMAL)
 cv2.namedWindow(WINDOW_BLACK, cv2.WINDOW_NORMAL)
 
-cv2.resizeWindow(WINDOW_MAIN, 900, 650)
+cv2.resizeWindow(WINDOW_MAIN, 950, 680)
 cv2.resizeWindow(WINDOW_WHITE, 320, 240)
 cv2.resizeWindow(WINDOW_RED, 320, 240)
+cv2.resizeWindow(WINDOW_BLUE, 320, 240)
 cv2.resizeWindow(WINDOW_BLACK, 320, 240)
 
 cv2.moveWindow(WINDOW_MAIN, 20, 20)
-cv2.moveWindow(WINDOW_WHITE, 950, 20)
-cv2.moveWindow(WINDOW_RED, 950, 300)
-cv2.moveWindow(WINDOW_BLACK, 950, 580)
+cv2.moveWindow(WINDOW_WHITE, 1000, 20)
+cv2.moveWindow(WINDOW_RED, 1000, 280)
+cv2.moveWindow(WINDOW_BLUE, 1000, 540)
+cv2.moveWindow(WINDOW_BLACK, 1000, 800)
 
+# ----------------------------
 # Trackbars
+# ----------------------------
+# White card detection
 cv2.createTrackbar("WHITE_S_MAX", WINDOW_MAIN, 75, 255, nothing)
 cv2.createTrackbar("WHITE_V_MIN", WINDOW_MAIN, 140, 255, nothing)
 cv2.createTrackbar("MIN_WHITE_AREA", WINDOW_MAIN, 2500, 30000, nothing)
 
-cv2.createTrackbar("RED_H1_MAX", WINDOW_MAIN, 12, 30, nothing)
-cv2.createTrackbar("RED_H2_MIN", WINDOW_MAIN, 168, 180, nothing)
-cv2.createTrackbar("RED_S_MIN", WINDOW_MAIN, 100, 255, nothing)
+# Red thresholds
+cv2.createTrackbar("RED_H1_MAX", WINDOW_MAIN, 10, 30, nothing)
+cv2.createTrackbar("RED_H2_MIN", WINDOW_MAIN, 172, 180, nothing)
+cv2.createTrackbar("RED_S_MIN", WINDOW_MAIN, 120, 255, nothing)
 cv2.createTrackbar("RED_V_MIN", WINDOW_MAIN, 100, 255, nothing)
 
+# Blue thresholds (to reject purple)
+cv2.createTrackbar("BLUE_H_MIN", WINDOW_MAIN, 95, 179, nothing)
+cv2.createTrackbar("BLUE_H_MAX", WINDOW_MAIN, 145, 179, nothing)
+cv2.createTrackbar("BLUE_S_MIN", WINDOW_MAIN, 80, 255, nothing)
+cv2.createTrackbar("BLUE_V_MIN", WINDOW_MAIN, 60, 255, nothing)
+
+# Black thresholds
 cv2.createTrackbar("BLACK_V_MAX", WINDOW_MAIN, 70, 255, nothing)
 
-# updated starting values here
+# Decision thresholds
 cv2.createTrackbar("RED_RATIO_x100", WINDOW_MAIN, 20, 100, nothing)
 cv2.createTrackbar("BLACK_RATIO_x100", WINDOW_MAIN, 20, 100, nothing)
-cv2.createTrackbar("MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
+cv2.createTrackbar("BLUE_RATIO_MAX_x100", WINDOW_MAIN, 12, 100, nothing)
+cv2.createTrackbar("RB_MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
+cv2.createTrackbar("TB_MARGIN_x100", WINDOW_MAIN, 130, 300, nothing)
 
+# Morphology
 cv2.createTrackbar("OPEN_K", WINDOW_MAIN, 3, 15, nothing)
 cv2.createTrackbar("CLOSE_K", WINDOW_MAIN, 5, 15, nothing)
 
@@ -79,6 +107,9 @@ while True:
 
     display = frame.copy()
 
+    # ----------------------------
+    # Read sliders
+    # ----------------------------
     WHITE_S_MAX = cv2.getTrackbarPos("WHITE_S_MAX", WINDOW_MAIN)
     WHITE_V_MIN = cv2.getTrackbarPos("WHITE_V_MIN", WINDOW_MAIN)
     MIN_WHITE_AREA = cv2.getTrackbarPos("MIN_WHITE_AREA", WINDOW_MAIN)
@@ -88,11 +119,18 @@ while True:
     RED_S_MIN = cv2.getTrackbarPos("RED_S_MIN", WINDOW_MAIN)
     RED_V_MIN = cv2.getTrackbarPos("RED_V_MIN", WINDOW_MAIN)
 
+    BLUE_H_MIN = cv2.getTrackbarPos("BLUE_H_MIN", WINDOW_MAIN)
+    BLUE_H_MAX = cv2.getTrackbarPos("BLUE_H_MAX", WINDOW_MAIN)
+    BLUE_S_MIN = cv2.getTrackbarPos("BLUE_S_MIN", WINDOW_MAIN)
+    BLUE_V_MIN = cv2.getTrackbarPos("BLUE_V_MIN", WINDOW_MAIN)
+
     BLACK_V_MAX = cv2.getTrackbarPos("BLACK_V_MAX", WINDOW_MAIN)
 
     RED_RATIO_TH = cv2.getTrackbarPos("RED_RATIO_x100", WINDOW_MAIN) / 100.0
     BLACK_RATIO_TH = cv2.getTrackbarPos("BLACK_RATIO_x100", WINDOW_MAIN) / 100.0
-    STRONG_MARGIN = cv2.getTrackbarPos("MARGIN_x100", WINDOW_MAIN) / 100.0
+    BLUE_RATIO_MAX = cv2.getTrackbarPos("BLUE_RATIO_MAX_x100", WINDOW_MAIN) / 100.0
+    RB_MARGIN = cv2.getTrackbarPos("RB_MARGIN_x100", WINDOW_MAIN) / 100.0
+    TB_MARGIN = cv2.getTrackbarPos("TB_MARGIN_x100", WINDOW_MAIN) / 100.0
 
     OPEN_K = max(1, cv2.getTrackbarPos("OPEN_K", WINDOW_MAIN))
     CLOSE_K = max(1, cv2.getTrackbarPos("CLOSE_K", WINDOW_MAIN))
@@ -104,6 +142,9 @@ while True:
     kernel_open = np.ones((OPEN_K, OPEN_K), np.uint8)
     kernel_close = np.ones((CLOSE_K, CLOSE_K), np.uint8)
 
+    # ----------------------------
+    # Blue guide box
+    # ----------------------------
     H, W = frame.shape[:2]
     x0 = W // 2 - BOX_HALF_W
     y0 = H // 2 - BOX_HALF_H
@@ -117,6 +158,9 @@ while True:
     work = frame[y0:y1, x0:x1].copy()
     work_hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV)
 
+    # ----------------------------
+    # White card detection
+    # ----------------------------
     white_mask = cv2.inRange(
         work_hsv,
         np.array([0, 0, WHITE_V_MIN], dtype=np.uint8),
@@ -129,10 +173,12 @@ while True:
 
     label = "E"
     red_ratio = 0.0
+    blue_ratio = 0.0
     black_ratio = 0.0
     found_area = 0.0
 
     red_mask_full = np.zeros_like(white_mask)
+    blue_mask_full = np.zeros_like(white_mask)
     black_mask_full = np.zeros_like(white_mask)
 
     if cnt is not None:
@@ -141,11 +187,16 @@ while True:
 
         if area >= MIN_WHITE_AREA:
             rx, ry, rw, rh = cv2.boundingRect(cnt)
+
             cv2.rectangle(work, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
+            cv2.rectangle(display, (x0 + rx, y0 + ry), (x0 + rx + rw, y0 + ry + rh), (0, 255, 0), 2)
 
             roi = work[ry:ry+rh, rx:rx+rw].copy()
             roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
+            # ----------------------------
+            # Red mask
+            # ----------------------------
             red1 = cv2.inRange(
                 roi_hsv,
                 np.array([0, RED_S_MIN, RED_V_MIN], dtype=np.uint8),
@@ -160,6 +211,35 @@ while True:
             red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel_open)
             red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel_open)
 
+            # ----------------------------
+            # Blue mask
+            # ----------------------------
+            if BLUE_H_MIN <= BLUE_H_MAX:
+                blue_mask = cv2.inRange(
+                    roi_hsv,
+                    np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
+                    np.array([BLUE_H_MAX, 255, 255], dtype=np.uint8)
+                )
+            else:
+                # fallback, though normal use should keep min <= max
+                b1 = cv2.inRange(
+                    roi_hsv,
+                    np.array([BLUE_H_MIN, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
+                    np.array([179, 255, 255], dtype=np.uint8)
+                )
+                b2 = cv2.inRange(
+                    roi_hsv,
+                    np.array([0, BLUE_S_MIN, BLUE_V_MIN], dtype=np.uint8),
+                    np.array([BLUE_H_MAX, 255, 255], dtype=np.uint8)
+                )
+                blue_mask = cv2.bitwise_or(b1, b2)
+
+            blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel_open)
+            blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel_open)
+
+            # ----------------------------
+            # Black mask
+            # ----------------------------
             v = roi_hsv[:, :, 2]
             black_mask = np.where(v <= BLACK_V_MAX, 255, 0).astype(np.uint8)
             black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel_open)
@@ -167,35 +247,65 @@ while True:
 
             total = roi.shape[0] * roi.shape[1] + 1e-6
             red_ratio = np.count_nonzero(red_mask) / total
+            blue_ratio = np.count_nonzero(blue_mask) / total
             black_ratio = np.count_nonzero(black_mask) / total
 
             red_mask_full[ry:ry+rh, rx:rx+rw] = red_mask
+            blue_mask_full[ry:ry+rh, rx:rx+rw] = blue_mask
             black_mask_full[ry:ry+rh, rx:rx+rw] = black_mask
 
-            if red_ratio >= RED_RATIO_TH and red_ratio > black_ratio * STRONG_MARGIN:
+            # ----------------------------
+            # Decision logic
+            # ----------------------------
+            # O must have strong red, low blue, and red must beat blue
+            obstacle_ok = (
+                red_ratio >= RED_RATIO_TH and
+                blue_ratio <= BLUE_RATIO_MAX and
+                red_ratio > blue_ratio * RB_MARGIN
+            )
+
+            # T must have strong black and not be overwhelmed by blue
+            target_ok = (
+                black_ratio >= BLACK_RATIO_TH and
+                black_ratio > blue_ratio * TB_MARGIN
+            )
+
+            if obstacle_ok and not target_ok:
                 label = "O"
-            elif black_ratio >= BLACK_RATIO_TH and black_ratio > red_ratio * STRONG_MARGIN:
+            elif target_ok and not obstacle_ok:
                 label = "T"
+            elif obstacle_ok and target_ok:
+                # choose stronger of the two
+                if red_ratio > black_ratio:
+                    label = "O"
+                else:
+                    label = "T"
             else:
                 label = "E"
 
-            cv2.rectangle(display, (x0 + rx, y0 + ry), (x0 + rx + rw, y0 + ry + rh), (0, 255, 0), 2)
-
+    # Small ROI preview
     work_small = cv2.resize(work, (180, 180))
     display[10:190, FRAME_WIDTH-190:FRAME_WIDTH-10] = work_small
 
-    cv2.putText(display, f"Label: {label}", (20, FRAME_HEIGHT - 85),
+    # On-screen text
+    cv2.putText(display, f"Label: {label}", (20, FRAME_HEIGHT - 110),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"white_area: {found_area:.0f}", (20, FRAME_HEIGHT - 55),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"red_ratio: {red_ratio:.3f}", (20, FRAME_HEIGHT - 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(display, f"black_ratio: {black_ratio:.3f}", (250, FRAME_HEIGHT - 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(display, f"white_area: {found_area:.0f}", (20, FRAME_HEIGHT - 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(display, f"red_ratio: {red_ratio:.3f}", (20, FRAME_HEIGHT - 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(display, f"blue_ratio: {blue_ratio:.3f}", (220, FRAME_HEIGHT - 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(display, f"black_ratio: {black_ratio:.3f}", (420, FRAME_HEIGHT - 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2, cv2.LINE_AA)
+
+    cv2.putText(display, "Goal: purple tile should NOT become O", (20, FRAME_HEIGHT - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 1, cv2.LINE_AA)
 
     cv2.imshow(WINDOW_MAIN, display)
     cv2.imshow(WINDOW_WHITE, white_mask)
     cv2.imshow(WINDOW_RED, red_mask_full)
+    cv2.imshow(WINDOW_BLUE, blue_mask_full)
     cv2.imshow(WINDOW_BLACK, black_mask_full)
 
     key = cv2.waitKey(1) & 0xFF
