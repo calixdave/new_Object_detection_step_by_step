@@ -1,3 +1,4 @@
+
 import os
 import json
 import cv2
@@ -24,55 +25,58 @@ SLOT_PAD_Y_FRAC = 0.06
 
 # ---------------------------------------------------------
 # Color / brightness thresholds
-# NOTE:
-# These are safer starting values than the older whole-slot
-# ratio method. Final tuning should still be done on robot
-# camera images, not phone images.
+# Tuned to be a bit more forgiving on the white box stage.
 # ---------------------------------------------------------
-WHITE_V_MIN = 155          # HSV V threshold for white box
-WHITE_S_MAX = 85           # HSV S max for white box
+WHITE_V_MIN = 150          # was stricter before
+WHITE_S_MAX = 95
 
-BLACK_MAX = 80             # grayscale threshold for black X
-RED_S_MIN = 110            # HSV red saturation min
-RED_V_MIN = 110            # HSV red value min
+BLACK_MAX = 80
+RED_S_MIN = 95
+RED_V_MIN = 110
 
 # ---------------------------------------------------------
-# Candidate white-box filtering
-# Relative to each slot crop (very important for noise)
+# White-box candidate filtering
 # ---------------------------------------------------------
-MIN_BOX_AREA_FRAC = 0.035
-MAX_BOX_AREA_FRAC = 0.22
+MIN_BOX_AREA_FRAC = 0.025
+MAX_BOX_AREA_FRAC = 0.30
 
-MIN_BOX_W_FRAC = 0.18
-MAX_BOX_W_FRAC = 0.60
-MIN_BOX_H_FRAC = 0.18
-MAX_BOX_H_FRAC = 0.60
+MIN_BOX_W_FRAC = 0.16
+MAX_BOX_W_FRAC = 0.72
+MIN_BOX_H_FRAC = 0.16
+MAX_BOX_H_FRAC = 0.72
 
-MIN_ASPECT = 0.60
-MAX_ASPECT = 1.45
-MIN_SOLIDITY = 0.72
-MIN_EXTENT = 0.52
+MIN_ASPECT = 0.55
+MAX_ASPECT = 1.60
 
-# optional center preference
+MIN_SOLIDITY = 0.68        # used for single-contour candidate
+MIN_EXTENT = 0.46          # used for single-contour candidate
+MIN_WHITE_FILL = 0.32      # used for merged/fragmented candidate
+
+MIN_WHITE_PIECE_AREA = 120
 MAX_CENTER_OFFSET_X_FRAC = 0.42
 MAX_CENTER_OFFSET_Y_FRAC = 0.42
 
 # ---------------------------------------------------------
 # Inner-symbol checks after candidate box is found
+# Smaller margin so X arms are not cropped away.
 # ---------------------------------------------------------
-INNER_MARGIN_FRAC = 0.12
+INNER_MARGIN_FRAC = 0.06
 
-RED_RATIO_TH = 0.05
-BLACK_RATIO_TH = 0.05
+RED_RATIO_TH = 0.08
+RED_RATIO_STRONG_TH = 0.14
+
+BLACK_RATIO_TH = 0.08
+BLACK_RATIO_STRONG_TH = 0.14
 
 # ---------------------------------------------------------
 # Hough line settings for X detection
+# Slightly looser than before.
 # ---------------------------------------------------------
-CANNY1 = 40
-CANNY2 = 120
-HOUGH_TH = 16
-MIN_LINE = 10
-MAX_GAP = 12
+CANNY1 = 30
+CANNY2 = 110
+HOUGH_TH = 12
+MIN_LINE = 8
+MAX_GAP = 16
 
 BLUR_ODD = 3
 
@@ -228,10 +232,10 @@ def detect_x_lines(binary_img):
 
             ang = np.degrees(np.arctan2(dy, dx))
 
-            if 25 <= ang <= 65:
+            if 20 <= ang <= 70:
                 diag_pos += 1
                 line_segments.append((x1, y1, x2, y2))
-            elif -65 <= ang <= -25:
+            elif -70 <= ang <= -20:
                 diag_neg += 1
                 line_segments.append((x1, y1, x2, y2))
 
@@ -246,14 +250,7 @@ def draw_lines_on_image(img_bgr, lines, color=(0, 255, 255)):
     return out
 
 
-def find_best_white_box_candidate(slot_bgr):
-    """
-    Find a likely white box in the slot before checking the X.
-    This is the big improvement versus the older whole-slot method.
-    """
-    h, w = slot_bgr.shape[:2]
-    slot_area = h * w
-
+def build_white_mask(slot_bgr):
     hsv = cv2.cvtColor(slot_bgr, cv2.COLOR_BGR2HSV)
 
     white_mask = cv2.inRange(
@@ -263,22 +260,123 @@ def find_best_white_box_candidate(slot_bgr):
     )
 
     kernel3 = np.ones((3, 3), np.uint8)
+    kernel5 = np.ones((5, 5), np.uint8)
+
+    # Light opening to remove pepper noise, then stronger close
+    # so the white box fragments can reconnect.
     white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel3)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel3)
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel5, iterations=1)
+
+    return white_mask
+
+
+def evaluate_candidate_rect(
+    rect, white_sum_area, slot_shape, source_name,
+    solidity=None, extent=None, piece_count=1
+):
+    h, w = slot_shape[:2]
+    slot_area = float(h * w)
+
+    x, y, bw, bh = rect
+    rect_area = float(bw * bh)
+
+    if bw <= 0 or bh <= 0 or rect_area <= 0:
+        return None
+
+    area_frac = white_sum_area / max(1.0, slot_area)
+    w_frac = bw / float(w)
+    h_frac = bh / float(h)
+    aspect = bw / float(bh) if bh > 0 else 999.0
+    white_fill = white_sum_area / rect_area
+
+    if not (MIN_BOX_AREA_FRAC <= area_frac <= MAX_BOX_AREA_FRAC):
+        return None
+    if not (MIN_BOX_W_FRAC <= w_frac <= MAX_BOX_W_FRAC):
+        return None
+    if not (MIN_BOX_H_FRAC <= h_frac <= MAX_BOX_H_FRAC):
+        return None
+    if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
+        return None
+
+    if source_name == "single_contour":
+        if solidity is None or extent is None:
+            return None
+        if solidity < MIN_SOLIDITY:
+            return None
+        if extent < MIN_EXTENT:
+            return None
+    else:
+        if white_fill < MIN_WHITE_FILL:
+            return None
+
+    slot_cx = w / 2.0
+    slot_cy = h / 2.0
+
+    cx = x + bw / 2.0
+    cy = y + bh / 2.0
+    center_dx_frac = abs(cx - slot_cx) / max(1.0, slot_cx)
+    center_dy_frac = abs(cy - slot_cy) / max(1.0, slot_cy)
+
+    if center_dx_frac > MAX_CENTER_OFFSET_X_FRAC:
+        return None
+    if center_dy_frac > MAX_CENTER_OFFSET_Y_FRAC:
+        return None
+
+    # Favor larger valid white candidates near the center.
+    score = (
+        3.0 * area_frac
+        + 1.6 * white_fill
+        - 0.9 * center_dx_frac
+        - 0.7 * center_dy_frac
+    )
+
+    if solidity is not None:
+        score += 0.7 * solidity
+    if extent is not None:
+        score += 0.5 * extent
+    if piece_count > 1:
+        score += 0.15
+
+    return {
+        "rect": (int(x), int(y), int(bw), int(bh)),
+        "source": source_name,
+        "piece_count": int(piece_count),
+        "area_frac": float(area_frac),
+        "w_frac": float(w_frac),
+        "h_frac": float(h_frac),
+        "aspect": float(aspect),
+        "white_fill": float(white_fill),
+        "center_dx_frac": float(center_dx_frac),
+        "center_dy_frac": float(center_dy_frac),
+        "solidity": float(solidity) if solidity is not None else None,
+        "extent": float(extent) if extent is not None else None,
+        "score": float(score),
+    }
+
+
+def find_best_white_box_candidate(slot_bgr):
+    """
+    Try two paths:
+    1) a classic single white contour
+    2) a merged candidate from multiple nearby white fragments
+       caused by the red/black X splitting the box
+    """
+    h, w = slot_bgr.shape[:2]
+    white_mask = build_white_mask(slot_bgr)
 
     contours, _ = cv2.findContours(
         white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    best = None
-    best_score = -1e9
+    candidates = []
 
+    big_boxes = []
     slot_cx = w / 2.0
     slot_cy = h / 2.0
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 50:
+        if area < MIN_WHITE_PIECE_AREA:
             continue
 
         x, y, bw, bh = cv2.boundingRect(cnt)
@@ -286,74 +384,63 @@ def find_best_white_box_candidate(slot_bgr):
         if rect_area <= 0:
             continue
 
-        area_frac = area / float(slot_area)
-        w_frac = bw / float(w)
-        h_frac = bh / float(h)
-        aspect = bw / float(bh) if bh > 0 else 999.0
-
-        if not (MIN_BOX_AREA_FRAC <= area_frac <= MAX_BOX_AREA_FRAC):
-            continue
-        if not (MIN_BOX_W_FRAC <= w_frac <= MAX_BOX_W_FRAC):
-            continue
-        if not (MIN_BOX_H_FRAC <= h_frac <= MAX_BOX_H_FRAC):
-            continue
-        if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
-            continue
-
         solidity = contour_solidity(cnt)
         extent = area / float(rect_area)
 
-        if solidity < MIN_SOLIDITY:
-            continue
-        if extent < MIN_EXTENT:
-            continue
+        single = evaluate_candidate_rect(
+            rect=(x, y, bw, bh),
+            white_sum_area=float(area),
+            slot_shape=slot_bgr.shape,
+            source_name="single_contour",
+            solidity=solidity,
+            extent=extent,
+            piece_count=1
+        )
+        if single is not None:
+            candidates.append(single)
 
         cx = x + bw / 2.0
         cy = y + bh / 2.0
-
         center_dx_frac = abs(cx - slot_cx) / max(1.0, slot_cx)
         center_dy_frac = abs(cy - slot_cy) / max(1.0, slot_cy)
 
-        if center_dx_frac > MAX_CENTER_OFFSET_X_FRAC:
-            continue
-        if center_dy_frac > MAX_CENTER_OFFSET_Y_FRAC:
-            continue
+        if center_dx_frac <= MAX_CENTER_OFFSET_X_FRAC and center_dy_frac <= MAX_CENTER_OFFSET_Y_FRAC:
+            big_boxes.append((x, y, bw, bh, float(area)))
 
-        # Score: prefer good size, solidity, extent, and closer to center
-        score = (
-            3.0 * area_frac
-            + 1.2 * solidity
-            + 1.0 * extent
-            - 0.9 * center_dx_frac
-            - 0.7 * center_dy_frac
+    # Merged fragmented-box candidate:
+    # union all qualifying white pieces near the center.
+    if len(big_boxes) >= 2:
+        x0 = min(b[0] for b in big_boxes)
+        y0 = min(b[1] for b in big_boxes)
+        x1 = max(b[0] + b[2] for b in big_boxes)
+        y1 = max(b[1] + b[3] for b in big_boxes)
+        white_sum_area = sum(b[4] for b in big_boxes)
+
+        merged = evaluate_candidate_rect(
+            rect=(x0, y0, x1 - x0, y1 - y0),
+            white_sum_area=white_sum_area,
+            slot_shape=slot_bgr.shape,
+            source_name="merged_fragments",
+            piece_count=len(big_boxes)
         )
+        if merged is not None:
+            candidates.append(merged)
 
-        if score > best_score:
-            best_score = score
-            best = {
-                "rect": (x, y, bw, bh),
-                "area": area,
-                "area_frac": area_frac,
-                "w_frac": w_frac,
-                "h_frac": h_frac,
-                "aspect": aspect,
-                "solidity": solidity,
-                "extent": extent,
-                "center_dx_frac": center_dx_frac,
-                "center_dy_frac": center_dy_frac,
-                "score": score,
-            }
+    if not candidates:
+        return None, white_mask
 
+    best = max(candidates, key=lambda d: d["score"])
     return best, white_mask
 
 
 def detect_one_object_slot(slot_bgr, debug_prefix):
     """
-    New logic:
+    Updated logic:
     1) find white box candidate
-    2) verify size/shape
-    3) crop inner region
-    4) detect red X or black X only inside candidate
+       - single contour OR merged white fragments
+    2) crop inner region
+    3) detect red X or black X only inside candidate
+    4) allow strong red/black ratio fallback when Hough misses one arm
     """
     if slot_bgr is None or slot_bgr.size == 0:
         return "?", {"reason": "empty_slot_image"}
@@ -361,7 +448,6 @@ def detect_one_object_slot(slot_bgr, debug_prefix):
     h, w = slot_bgr.shape[:2]
 
     gray = cv2.cvtColor(slot_bgr, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(slot_bgr, cv2.COLOR_BGR2HSV)
 
     if BLUR_ODD > 1:
         k = ensure_odd(BLUR_ODD)
@@ -422,11 +508,13 @@ def detect_one_object_slot(slot_bgr, debug_prefix):
     black_mask = cv2.inRange(inner_gray, 0, BLACK_MAX)
 
     kernel3 = np.ones((3, 3), np.uint8)
+    kernel5 = np.ones((5, 5), np.uint8)
+
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel3)
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel3)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel5)
 
     black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel3)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel3)
+    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel5)
 
     save_image(f"{debug_prefix}_inner.jpg", inner)
     save_image(f"{debug_prefix}_red_mask.jpg", red_mask)
@@ -443,15 +531,19 @@ def detect_one_object_slot(slot_bgr, debug_prefix):
     save_image(f"{debug_prefix}_red_lines.jpg", draw_lines_on_image(inner, red_lines, (0, 0, 255)))
     save_image(f"{debug_prefix}_black_lines.jpg", draw_lines_on_image(inner, black_lines, (0, 255, 255)))
 
+    label_overlay = f"{best['source']} fill={best['white_fill']:.2f}"
     candidate_dbg = draw_candidate_debug(
         slot_bgr,
         rect=(x, y, bw, bh),
-        inner_rect=(ix0, iy0, ix1 - ix0, iy1 - iy0)
+        inner_rect=(ix0, iy0, ix1 - ix0, iy1 - iy0),
+        label_text=label_overlay
     )
     save_image(f"{debug_prefix}_candidate.jpg", candidate_dbg)
 
     metrics = {
         "candidate_found": True,
+        "candidate_source": best["source"],
+        "piece_count": int(best["piece_count"]),
         "box_x": int(x),
         "box_y": int(y),
         "box_w": int(bw),
@@ -460,11 +552,12 @@ def detect_one_object_slot(slot_bgr, debug_prefix):
         "box_w_frac": round(best["w_frac"], 4),
         "box_h_frac": round(best["h_frac"], 4),
         "aspect": round(best["aspect"], 4),
-        "solidity": round(best["solidity"], 4),
-        "extent": round(best["extent"], 4),
+        "white_fill": round(best["white_fill"], 4),
         "center_dx_frac": round(best["center_dx_frac"], 4),
         "center_dy_frac": round(best["center_dy_frac"], 4),
         "candidate_score": round(best["score"], 4),
+        "solidity": None if best["solidity"] is None else round(best["solidity"], 4),
+        "extent": None if best["extent"] is None else round(best["extent"], 4),
         "red_ratio": round(red_ratio, 4),
         "black_ratio": round(black_ratio, 4),
         "has_red_x": bool(has_red_x),
@@ -475,11 +568,13 @@ def detect_one_object_slot(slot_bgr, debug_prefix):
         "black_diag_neg": int(black_diag_neg),
     }
 
-    # Stronger decision: symbol must be inside a real white candidate
-    if red_ratio >= RED_RATIO_TH and has_red_x:
+    # Obstacle: real white candidate + red evidence.
+    # Allow strong ratio fallback even if Hough misses one arm.
+    if red_ratio >= RED_RATIO_TH and (has_red_x or red_ratio >= RED_RATIO_STRONG_TH):
         return "O", metrics
 
-    if black_ratio >= BLACK_RATIO_TH and has_black_x:
+    # Target: real white candidate + black evidence.
+    if black_ratio >= BLACK_RATIO_TH and (has_black_x or black_ratio >= BLACK_RATIO_STRONG_TH):
         return "T", metrics
 
     # White box found, but no clear symbol
