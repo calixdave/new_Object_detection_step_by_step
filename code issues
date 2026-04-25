@@ -1,107 +1,448 @@
-.
-Press 'c' to capture each heading.
-Capture order: front -> right -> back -> left
-Program will continue automatically after all 4 captures.
-libpng warning: iCCP: known incorrect sRGB profile
-libpng warning: iCCP: known incorrect sRGB profile
-libpng warning: iCCP: known incorrect sRGB profile
-libpng warning: iCCP: known incorrect sRGB profile
-libpng warning: iCCP: known incorrect sRGB profile
-Saved: scan_images/front.jpg
-Saved: scan_images/right.jpg
-Saved: scan_images/back.jpg
-Saved: scan_images/left.jpg
-All 4 captures completed.
-Moving to next step...
+import os
+import json
+import cv2
+import numpy as np
 
-=== STEP 2: DETECT COLORS ===
+# =========================================================
+# detect_objects.py
+#
+# Still-image ArUco object detection.
+#
+# Reads:
+#   scan_images/front.jpg
+#   scan_images/right.jpg
+#   scan_images/back.jpg
+#   scan_images/left.jpg
+#
+# Outputs:
+#   results/object_results.json
+#   results/local_object_3x3.txt
+#
+# Object meaning:
+#   ArUco ID 0 = T target
+#   ArUco ID 1 = O obstacle
+#   no marker   = E empty
+# =========================================================
 
-Heading: front
-  slot 0: label=red, char=R, saved=debug_tiles/front_slot0.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 173.95, 's_mean': 118.25, 'v_mean': 229.73, 'lab_a_mean': 169.5, 'lab_b_mean': 144.06, 'ratios': {'red': 1.0, 'yellow': 0.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
-  slot 1: label=red, char=R, saved=debug_tiles/front_slot1.jpg
-    metrics: {'valid_ratio': 0.8721, 'h_mean': 155.84, 's_mean': 131.84, 'v_mean': 170.45, 'lab_a_mean': 164.19, 'lab_b_mean': 142.91, 'ratios': {'red': 0.858, 'yellow': 0.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
-  slot 2: label=red, char=R, saved=debug_tiles/front_slot2.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 90.99, 's_mean': 88.94, 'v_mean': 223.72, 'lab_a_mean': 157.65, 'lab_b_mean': 139.38, 'ratios': {'red': 1.0, 'yellow': 0.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
+SCAN_DIR = "scan_images"
+DEBUG_DIR = "debug_objects"
+RESULTS_DIR = "results"
 
-Heading: right
-  slot 0: label=red, char=R, saved=debug_tiles/right_slot0.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 90.83, 's_mean': 87.41, 'v_mean': 187.88, 'lab_a_mean': 153.28, 'lab_b_mean': 137.41, 'ratios': {'red': 1.0, 'yellow': 0.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
-  slot 1: label=green, char=G, saved=debug_tiles/right_slot1.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 42.35, 's_mean': 96.6, 'v_mean': 155.72, 'lab_a_mean': 109.0, 'lab_b_mean': 156.13, 'ratios': {'red': 0.0, 'yellow': 0.0, 'green': 1.0, 'blue': 0.0, 'pm': 0.0}}
-  slot 2: label=green, char=G, saved=debug_tiles/right_slot2.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 42.41, 's_mean': 92.78, 'v_mean': 171.85, 'lab_a_mean': 108.12, 'lab_b_mean': 157.3, 'ratios': {'red': 0.0, 'yellow': 0.0, 'green': 1.0, 'blue': 0.0, 'pm': 0.0}}
+HEADINGS = ["front", "right", "back", "left"]
 
-Heading: back
-  slot 0: label=green, char=G, saved=debug_tiles/back_slot0.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 43.56, 's_mean': 97.09, 'v_mean': 167.21, 'lab_a_mean': 106.79, 'lab_b_mean': 157.74, 'ratios': {'red': 0.0, 'yellow': 0.0, 'green': 1.0, 'blue': 0.0, 'pm': 0.0}}
-  slot 1: label=red, char=R, saved=debug_tiles/back_slot1.jpg
-    metrics: {'valid_ratio': 0.998, 'h_mean': 170.67, 's_mean': 52.04, 'v_mean': 148.95, 'lab_a_mean': 141.36, 'lab_b_mean': 127.39, 'ratios': {'red': 0.9423, 'yellow': 0.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0557}}
-  slot 2: label=yellow, char=Y, saved=debug_tiles/back_slot2.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 23.81, 's_mean': 112.6, 'v_mean': 208.41, 'lab_a_mean': 124.69, 'lab_b_mean': 167.27, 'ratios': {'red': 0.0, 'yellow': 1.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
+# Front-row ROI
+ROI_TOP_FRAC = 0.34
+ROI_BOT_FRAC = 0.94
 
-Heading: left
-  slot 0: label=yellow, char=Y, saved=debug_tiles/left_slot0.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 23.98, 's_mean': 109.02, 'v_mean': 218.03, 'lab_a_mean': 124.28, 'lab_b_mean': 167.55, 'ratios': {'red': 0.0, 'yellow': 1.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
-  slot 1: label=blue, char=B, saved=debug_tiles/left_slot1.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 101.52, 's_mean': 76.12, 'v_mean': 152.94, 'lab_a_mean': 122.4, 'lab_b_mean': 115.42, 'ratios': {'red': 0.0, 'yellow': 0.0, 'green': 0.0, 'blue': 1.0, 'pm': 0.0}}
-  slot 2: label=red, char=R, saved=debug_tiles/left_slot2.jpg
-    metrics: {'valid_ratio': 1.0, 'h_mean': 115.0, 's_mean': 119.61, 'v_mean': 204.21, 'lab_a_mean': 165.91, 'lab_b_mean': 143.96, 'ratios': {'red': 1.0, 'yellow': 0.0, 'green': 0.0, 'blue': 0.0, 'pm': 0.0}}
+SLOT_PAD_X_FRAC = 0.03
+SLOT_PAD_Y_FRAC = 0.06
 
-Final 3x3 color matrix:
-R R R
-B A G
-Y R G
-Saved: results/color_results.json
-Saved: results/local_color_3x3.txt
+# ArUco settings
+ARUCO_DICT_NAME = "DICT_4X4_50"
+TARGET_IDS = {0}
+OBSTACLE_IDS = {1}
 
-=== STEP 3: DETECT OBJECTS ===
+# Slightly expand each slot before marker detection
+EXPAND_SLOT_X_FRAC = 0.08
+EXPAND_SLOT_Y_FRAC = 0.08
 
-Heading: front
-  slot 0 -> grid_pos=(-1, 1): object=E, saved=debug_objects/front_slot0.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.9453, 'num_candidates': 0}
-  slot 1 -> grid_pos=(0, 1): object=T, saved=debug_objects/front_slot1.jpg
-    metrics: {'slot_white_ratio': 0.1633, 'num_candidates': 3, 'best_candidate': {'bbox': [33, 46, 85, 85], 'area_frac': 0.0531, 'aspect': 1.0, 'extent': 0.3752, 'solidity': 0.7134, 'white_ratio': 0.4781, 'red_ratio': 0.1027, 'black_ratio': 0.5091, 'red_pos': 0, 'red_neg': 0, 'blk_pos': 8, 'blk_neg': 7, 'red_x_score': 0, 'black_x_score': 4, 'has_red_x': False, 'has_black_x': True, 'obstacle_score': 1.1456, 'target_score': 4.1985, 'best_type': 'T', 'best_score': 4.1985}}
-  slot 2 -> grid_pos=(1, 1): object=E, saved=debug_objects/front_slot2.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.8721, 'num_candidates': 0}
+HEADING_TO_POSITIONS = {
+    "front": [(-1, +1), (0, +1), (+1, +1)],
+    "right": [(+1, +1), (+1, 0), (+1, -1)],
+    "back":  [(+1, -1), (0, -1), (-1, -1)],
+    "left":  [(-1, -1), (-1, 0), (-1, +1)],
+}
 
-Heading: right
-  slot 0 -> grid_pos=(1, 1): object=E, saved=debug_objects/right_slot0.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.9876, 'num_candidates': 0}
-  slot 1 -> grid_pos=(1, 0): object=E, saved=debug_objects/right_slot1.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.8998, 'num_candidates': 0}
-  slot 2 -> grid_pos=(1, -1): object=E, saved=debug_objects/right_slot2.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.989, 'num_candidates': 0}
 
-Heading: back
-  slot 0 -> grid_pos=(1, -1): object=E, saved=debug_objects/back_slot0.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 1.0, 'num_candidates': 0}
-  slot 1 -> grid_pos=(0, -1): object=E, saved=debug_objects/back_slot1.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 1.0, 'num_candidates': 0}
-  slot 2 -> grid_pos=(-1, -1): object=E, saved=debug_objects/back_slot2.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.999, 'num_candidates': 0}
+def init_aruco():
+    if not hasattr(cv2, "aruco"):
+        raise RuntimeError(
+            "cv2.aruco not found. Install opencv-contrib-python or python3-opencv with aruco support."
+        )
 
-Heading: left
-  slot 0 -> grid_pos=(-1, -1): object=E, saved=debug_objects/left_slot0.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 1.0, 'num_candidates': 0}
-  slot 1 -> grid_pos=(-1, 0): object=E, saved=debug_objects/left_slot1.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 1.0, 'num_candidates': 0}
-  slot 2 -> grid_pos=(-1, 1): object=E, saved=debug_objects/left_slot2.jpg
-    metrics: {'reason': 'no_white_candidate', 'slot_white_ratio': 0.839, 'num_candidates': 0}
+    dict_map = {
+        "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
+        "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
+        "DICT_5X5_50": cv2.aruco.DICT_5X5_50,
+        "DICT_5X5_100": cv2.aruco.DICT_5X5_100,
+    }
 
-Final 3x3 object matrix:
-E T E
-E A E
-E E E
-Saved: results/object_results.json
-Saved: results/local_object_3x3.txt
+    dictionary_id = dict_map.get(ARUCO_DICT_NAME, cv2.aruco.DICT_4X4_50)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary_id)
 
-=== STEP 4: MAP LOCATION ===
-camera_direction_before_scan = LEFT
-final_local_heading_after_scan = LEFT
-camera_direction_after_scan = DOWN
-compact_17char = YEBTREPEREGEGEMED
-Saved final compact result to: results/compact_17char.txt
+    if hasattr(cv2.aruco, "DetectorParameters"):
+        params = cv2.aruco.DetectorParameters()
+    else:
+        params = cv2.aruco.DetectorParameters_create()
 
-=== DONE ===
-Final compact_17char: YEBTREPEREGEGEMED
+    if hasattr(params, "detectInvertedMarker"):
+        params.detectInvertedMarker = True
+
+    if hasattr(params, "cornerRefinementMethod"):
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+
+    if hasattr(params, "adaptiveThreshWinSizeMin"):
+        params.adaptiveThreshWinSizeMin = 5
+        params.adaptiveThreshWinSizeMax = 31
+        params.adaptiveThreshWinSizeStep = 4
+
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+        return detector, None
+
+    return None, (aruco_dict, params)
+
+
+def detect_aruco(gray, detector, legacy_pack):
+    if detector is not None:
+        corners, ids, rejected = detector.detectMarkers(gray)
+    else:
+        aruco_dict, params = legacy_pack
+        corners, ids, rejected = cv2.aruco.detectMarkers(
+            gray,
+            aruco_dict,
+            parameters=params
+        )
+
+    return corners, ids
+
+
+def gray_variants(bgr):
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    ).apply(gray)
+
+    return [gray, clahe]
+
+
+def marker_id_to_object(marker_id):
+    marker_id = int(marker_id)
+
+    if marker_id in TARGET_IDS:
+        return "T"
+
+    if marker_id in OBSTACLE_IDS:
+        return "O"
+
+    return None
+
+
+def get_three_slot_rects(img):
+    h, w = img.shape[:2]
+
+    y0 = int(ROI_TOP_FRAC * h)
+    y1 = int(ROI_BOT_FRAC * h)
+
+    if y1 <= y0:
+        return []
+
+    band_h = y1 - y0
+    slot_w = w / 3.0
+
+    rects = []
+
+    for i in range(3):
+        sx0 = int(i * slot_w)
+        sx1 = int((i + 1) * slot_w)
+
+        pad_x = int(SLOT_PAD_X_FRAC * (sx1 - sx0))
+        pad_y = int(SLOT_PAD_Y_FRAC * band_h)
+
+        x0 = max(0, sx0 + pad_x)
+        x1 = min(w, sx1 - pad_x)
+        yy0 = max(0, y0 + pad_y)
+        yy1 = min(h, y1 - pad_y)
+
+        rects.append((x0, yy0, x1, yy1))
+
+    return rects
+
+
+def expand_rect(rect, img_w, img_h):
+    x0, y0, x1, y1 = rect
+
+    rw = x1 - x0
+    rh = y1 - y0
+
+    ex = int(EXPAND_SLOT_X_FRAC * rw)
+    ey = int(EXPAND_SLOT_Y_FRAC * rh)
+
+    return (
+        max(0, x0 - ex),
+        max(0, y0 - ey),
+        min(img_w, x1 + ex),
+        min(img_h, y1 + ey)
+    )
+
+
+def matrix_rows_from_grid(final_grid):
+    rows = []
+
+    for row in [1, 0, -1]:
+        vals = []
+
+        for col in [-1, 0, 1]:
+            vals.append(final_grid.get((col, row), "?"))
+
+        rows.append(vals)
+
+    return rows
+
+
+def pretty_print_matrix(final_grid):
+    rows = matrix_rows_from_grid(final_grid)
+
+    for row in rows:
+        print(" ".join(row))
+
+
+def save_matrix_txt(path, final_grid):
+    rows = matrix_rows_from_grid(final_grid)
+
+    with open(path, "w") as f:
+        for row in rows:
+            f.write(" ".join(row) + "\n")
+
+
+def detect_objects_in_heading(img, heading, detector, legacy_pack):
+    h, w = img.shape[:2]
+
+    slot_rects = get_three_slot_rects(img)
+
+    if len(slot_rects) != 3:
+        raise RuntimeError(f"Could not build 3 slots for heading: {heading}")
+
+    expanded_rects = [
+        expand_rect(rect, w, h)
+        for rect in slot_rects
+    ]
+
+    slot_ids = [[], [], []]
+    slot_objects = ["E", "E", "E"]
+
+    # Detect once in one combined front-row ROI for speed
+    fx0 = min(r[0] for r in expanded_rects)
+    fy0 = min(r[1] for r in expanded_rects)
+    fx1 = max(r[2] for r in expanded_rects)
+    fy1 = max(r[3] for r in expanded_rects)
+
+    full_roi = img[fy0:fy1, fx0:fx1]
+
+    if full_roi.size == 0:
+        return slot_objects, slot_ids, slot_rects, expanded_rects
+
+    seen = set()
+
+    for gray in gray_variants(full_roi):
+        corners, ids = detect_aruco(gray, detector, legacy_pack)
+
+        if ids is None or len(ids) == 0:
+            continue
+
+        for corner, marker_id in zip(corners, ids.flatten().tolist()):
+            marker_id = int(marker_id)
+
+            pts = corner.reshape(-1, 2)
+
+            cx_local = float(np.mean(pts[:, 0]))
+            cy_local = float(np.mean(pts[:, 1]))
+
+            cx = fx0 + cx_local
+            cy = fy0 + cy_local
+
+            # Choose slot by marker center
+            best_slot = None
+
+            for i, (x0, y0, x1, y1) in enumerate(expanded_rects):
+                if x0 <= cx <= x1 and y0 <= cy <= y1:
+                    best_slot = i
+                    break
+
+            if best_slot is None:
+                best_slot = min(
+                    range(3),
+                    key=lambda i: abs(
+                        cx - 0.5 * (expanded_rects[i][0] + expanded_rects[i][2])
+                    )
+                )
+
+            key = (best_slot, marker_id)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            slot_ids[best_slot].append(marker_id)
+
+    for i in range(3):
+        ids_here = slot_ids[i]
+
+        obj = "E"
+
+        if any(marker_id_to_object(mid) == "T" for mid in ids_here):
+            obj = "T"
+        elif any(marker_id_to_object(mid) == "O" for mid in ids_here):
+            obj = "O"
+
+        slot_objects[i] = obj
+
+    return slot_objects, slot_ids, slot_rects, expanded_rects
+
+
+def draw_debug(img, heading, slot_rects, expanded_rects, slot_objects, slot_ids):
+    debug = img.copy()
+
+    for i, rect in enumerate(slot_rects):
+        x0, y0, x1, y1 = rect
+
+        obj = slot_objects[i]
+        ids_here = slot_ids[i]
+
+        if obj == "T":
+            color = (0, 255, 0)
+        elif obj == "O":
+            color = (0, 0, 255)
+        else:
+            color = (180, 180, 180)
+
+        cv2.rectangle(debug, (x0, y0), (x1, y1), color, 2)
+
+        ex0, ey0, ex1, ey1 = expanded_rects[i]
+        cv2.rectangle(debug, (ex0, ey0), (ex1, ey1), (255, 255, 0), 1)
+
+        label = f"slot{i}: {obj} ids={ids_here}"
+
+        cv2.putText(
+            debug,
+            label,
+            (x0 + 5, y0 + 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+            cv2.LINE_AA
+        )
+
+    out_path = os.path.join(DEBUG_DIR, f"{heading}_aruco_debug.jpg")
+    cv2.imwrite(out_path, debug)
+
+    return out_path
+
+
+def main():
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    detector, legacy_pack = init_aruco()
+
+    print("ArUco enabled.")
+    print(f"Dictionary: {ARUCO_DICT_NAME}")
+    print(f"Target IDs: {TARGET_IDS}")
+    print(f"Obstacle IDs: {OBSTACLE_IDS}")
+
+    final_grid = {
+        (-1, +1): "?",
+        ( 0, +1): "?",
+        (+1, +1): "?",
+        (-1,  0): "?",
+        ( 0,  0): "A",
+        (+1,  0): "?",
+        (-1, -1): "?",
+        ( 0, -1): "?",
+        (+1, -1): "?",
+    }
+
+    detailed = {}
+
+    for heading in HEADINGS:
+        path = os.path.join(SCAN_DIR, f"{heading}.jpg")
+
+        if not os.path.exists(path):
+            print(f"ERROR: Missing image: {path}")
+            return
+
+        img = cv2.imread(path)
+
+        if img is None:
+            print(f"ERROR: Could not read image: {path}")
+            return
+
+        print(f"\nHeading: {heading}")
+
+        slot_objects, slot_ids, slot_rects, expanded_rects = detect_objects_in_heading(
+            img,
+            heading,
+            detector,
+            legacy_pack
+        )
+
+        debug_path = draw_debug(
+            img,
+            heading,
+            slot_rects,
+            expanded_rects,
+            slot_objects,
+            slot_ids
+        )
+
+        heading_info = []
+
+        for i, obj_char in enumerate(slot_objects):
+            pos = HEADING_TO_POSITIONS[heading][i]
+            final_grid[pos] = obj_char
+
+            crop_path = os.path.join(DEBUG_DIR, f"{heading}_slot{i}.jpg")
+            x0, y0, x1, y1 = slot_rects[i]
+            cv2.imwrite(crop_path, img[y0:y1, x0:x1])
+
+            print(f"  slot {i}: object={obj_char}, ids={slot_ids[i]}")
+            print(f"    crop={crop_path}")
+
+            heading_info.append({
+                "slot_index": i,
+                "pos": [pos[0], pos[1]],
+                "object": obj_char,
+                "ids": slot_ids[i],
+                "debug_crop": crop_path
+            })
+
+        detailed[heading] = {
+            "debug_image": debug_path,
+            "slots": heading_info
+        }
+
+    print("\nFinal 3x3 object matrix:")
+    pretty_print_matrix(final_grid)
+
+    out = {
+        "center": [0, 0],
+        "agent": "A",
+        "aruco_dictionary": ARUCO_DICT_NAME,
+        "target_ids": list(TARGET_IDS),
+        "obstacle_ids": list(OBSTACLE_IDS),
+        "grid_objects": {
+            f"{c},{r}": final_grid[(c, r)]
+            for (c, r) in final_grid
+        },
+        "per_heading": detailed
+    }
+
+    json_path = os.path.join(RESULTS_DIR, "object_results.json")
+    txt_path = os.path.join(RESULTS_DIR, "local_object_3x3.txt")
+
+    with open(json_path, "w") as f:
+        json.dump(out, f, indent=2)
+
+    save_matrix_txt(txt_path, final_grid)
+
+    print(f"\nSaved: {json_path}")
+    print(f"Saved: {txt_path}")
+    print(f"Saved debug images in: {DEBUG_DIR}")
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
